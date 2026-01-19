@@ -19,12 +19,14 @@ Commands:
 
 Options for 'move':
   -a, --app-id <ID>      The Application ID (partial match, case-insensitive)
+  -i, --index <INDEX>    The Application index from 'info' command
   -w, --workspace <NAME> The name of the target workspace
-  --wait <SECONDS>       Wait for the app to appear (optional)
+  --wait <SECONDS>       Wait for the app to appear (optional, only for --app-id)
 
 Examples:
   cos-cli info
   cos-cli move --app-id Firefox --workspace 2
+  cos-cli move -i 0 -w 2
   cos-cli move -a terminal -w 2 --wait 5
 ";
 
@@ -73,7 +75,7 @@ struct AppState {
     apps: Vec<App>,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 struct App {
     handle: zcosmic_toplevel_handle_v1::ZcosmicToplevelHandleV1,
     title: Option<String>,
@@ -85,7 +87,8 @@ struct App {
 
 #[derive(Debug)]
 struct MoveArgs {
-    app_id: String,
+    app_id: Option<String>,
+    app_index: Option<usize>,
     workspace_name: String,
     wait: Option<u64>,
 }
@@ -102,11 +105,32 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let command = match subcommand.as_deref() {
         Some("info") => Command::Info,
-        Some("move") => Command::Move(MoveArgs {
-            app_id: pargs.value_from_str(["-a", "--app-id"])?,
-            workspace_name: pargs.value_from_str(["-w", "--workspace"])?,
-            wait: pargs.opt_value_from_fn("--wait", |v| v.parse())?,
-        }),
+        Some("move") => {
+            let app_id: Option<String> = pargs.opt_value_from_str(["-a", "--app-id"])?;
+            let app_index: Option<usize> = pargs.opt_value_from_str(["-i", "--index"])?;
+
+            if app_id.is_none() && app_index.is_none() {
+                return Err(CliError::new(
+                    "Either --app-id or --index must be provided for 'move' command.".into(),
+                ));
+            }
+            if app_id.is_some() && app_index.is_some() {
+                return Err(CliError::new(
+                    "Only one of --app-id or --index can be provided for 'move' command.".into(),
+                ));
+            }
+
+            Command::Move(MoveArgs {
+                app_id,
+                app_index,
+                workspace_name: pargs.value_from_str(["-w", "--workspace"])?,
+                wait: pargs.opt_value_from_fn("--wait", |v| v.parse())?,
+            })
+        }
+        Some("help") => {
+            println!("{HELP}");
+            return Ok(());
+        }
         Some(_) => {
             return Err(CliError::new(format!(
                 "Unknown subcommand: {}",
@@ -137,9 +161,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     match command {
         Command::Info => {
             println!("Apps:");
-            for app in &state.apps {
+            for (i, app) in state.apps.iter().enumerate() {
                 println!(
-                    "\t{} (title: {})",
+                    "\t[{}] {} (title: {})",
+                    i,
                     app.app_id.as_deref().unwrap_or_default(),
                     app.title.as_deref().unwrap_or_default()
                 );
@@ -154,41 +179,51 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
         }
         Command::Move(args) => {
-            let sleep = std::time::Duration::from_millis(500);
-            let wait_dur = args.wait.map(std::time::Duration::from_secs);
-            let now = std::time::Instant::now();
-            let mut apps;
-
-            loop {
-                apps = state
-                    .apps
-                    .iter()
-                    .filter(|app| {
-                        app.app_id
-                            .as_ref()
-                            .map(|v| v.to_lowercase().contains(&args.app_id.to_lowercase()))
-                            .unwrap_or_default()
-                    })
-                    .collect::<Vec<_>>();
-
-                if !apps.is_empty() {
-                    break;
+            let apps_to_move: Vec<App> = if let Some(app_index) = args.app_index {
+                if let Some(app) = state.apps.get(app_index) {
+                    vec![app.clone()]
+                } else {
+                    return Err(CliError::new(format!("App index not found: {}", app_index)));
                 }
+            } else if let Some(app_id) = &args.app_id {
+                let sleep = std::time::Duration::from_millis(500);
+                let wait_dur = args.wait.map(std::time::Duration::from_secs);
+                let now = std::time::Instant::now();
+                let mut apps;
+                loop {
+                    apps = state
+                        .apps
+                        .iter()
+                        .filter(|app| {
+                            app.app_id
+                                .as_ref()
+                                .map(|v| v.to_lowercase().contains(&app_id.to_lowercase()))
+                                .unwrap_or_default()
+                        })
+                        .cloned()
+                        .collect::<Vec<_>>();
 
-                if let Some(wait) = wait_dur {
-                    if now.elapsed() > wait {
+                    if !apps.is_empty() {
                         break;
                     }
-                    std::thread::sleep(sleep);
-                    event_queue.roundtrip(&mut state)?;
-                } else {
-                    break;
-                }
-            }
 
-            if apps.is_empty() {
-                return Err(CliError::new(format!("App id not found: {}", args.app_id)));
-            }
+                    if let Some(wait) = wait_dur {
+                        if now.elapsed() > wait {
+                            break;
+                        }
+                        std::thread::sleep(sleep);
+                        event_queue.roundtrip(&mut state)?;
+                    } else {
+                        break;
+                    }
+                }
+                if apps.is_empty() {
+                    return Err(CliError::new(format!("App id not found: {}", app_id)));
+                }
+                apps
+            } else {
+                unreachable!(); // Already handled by arg parsing
+            };
 
             let Some(manager) = &state.cosmic_toplevel_manager else {
                 return Err(CliError::new(
@@ -209,7 +244,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             };
 
             let output = state.outputs[0].0.clone();
-            for app in apps {
+            for app in apps_to_move {
                 println!(
                     "Move {} to {}",
                     app.app_id.as_deref().unwrap_or_default(),
