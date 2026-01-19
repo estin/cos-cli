@@ -19,6 +19,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "cos-cli"
+version = "0.1.0"
+dependencies = [
+ "cosmic-protocols",
+ "pico-args",
+ "wayland-client",
+ "wayland-protocols",
+]
+
+[[package]]
 name = "cosmic-protocols"
 version = "0.2.0"
 source = "git+https://github.com/pop-os/cosmic-protocols#160b086abe03cd34a8a375d7fbe47b24308d1f38"
@@ -240,14 +250,4 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ae137229bcbd6cdf0f7b80a31df61766145077ddf49416a728b02cb3921ff3fc"
 dependencies = [
  "windows-link",
-]
-
-[[package]]
-name = "workspace-manager-test"
-version = "0.1.0"
-dependencies = [
- "cosmic-protocols",
- "pico-args",
- "wayland-client",
- "wayland-protocols",
 ]

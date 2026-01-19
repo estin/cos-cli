@@ -157,17 +157,21 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             let sleep = std::time::Duration::from_millis(500);
             let wait_dur = args.wait.map(std::time::Duration::from_secs);
             let now = std::time::Instant::now();
-            let mut app;
+            let mut apps;
 
             loop {
-                app = state.apps.iter().find(|app| {
-                    app.app_id
-                        .as_ref()
-                        .map(|v| v.to_lowercase().contains(&args.app_id.to_lowercase()))
-                        .unwrap_or_default()
-                });
+                apps = state
+                    .apps
+                    .iter()
+                    .filter(|app| {
+                        app.app_id
+                            .as_ref()
+                            .map(|v| v.to_lowercase().contains(&args.app_id.to_lowercase()))
+                            .unwrap_or_default()
+                    })
+                    .collect::<Vec<_>>();
 
-                if app.is_some() {
+                if !apps.is_empty() {
                     break;
                 }
 
@@ -182,6 +186,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 }
             }
 
+            if apps.is_empty() {
+                return Err(CliError::new(format!("App id not found: {}", args.app_id)));
+            }
+
             let Some(manager) = &state.cosmic_toplevel_manager else {
                 return Err(CliError::new(
                     "Compositor does not support workspace management protocol.".into(),
@@ -189,9 +197,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             };
             println!("Connected to cosmic toplevel manager!");
 
-            let Some(app) = app else {
-                return Err(CliError::new(format!("App id not found: {}", args.app_id)));
-            };
             let Some((_, workspace)) = state
                 .workspaces
                 .iter()
@@ -199,16 +204,19 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             else {
                 return Err(CliError::new(format!(
                     "Workspace not found: {}",
-                    args.app_id
+                    args.workspace_name
                 )));
             };
-            println!(
-                "Move {} to {}",
-                app.app_id.as_deref().unwrap_or_default(),
-                args.workspace_name,
-            );
+
             let output = state.outputs[0].0.clone();
-            manager.move_to_ext_workspace(&app.handle, workspace, &output);
+            for app in apps {
+                println!(
+                    "Move {} to {}",
+                    app.app_id.as_deref().unwrap_or_default(),
+                    args.workspace_name,
+                );
+                manager.move_to_ext_workspace(&app.handle, workspace, &output);
+            }
 
             conn.flush()?;
         }
