@@ -21,6 +21,7 @@ Options for 'move':
   -a, --app-id <ID>      The Application ID (partial match, case-insensitive)
   -i, --index <INDEX>    The Application index from 'info' command
   -w, --workspace <NAME> The name of the target workspace
+  -o, --output-index <INDEX> The output index from 'info' command (optional)
   --wait <SECONDS>       Wait for the app to appear (optional, only for --app-id)
 
 Examples:
@@ -28,6 +29,7 @@ Examples:
   cos-cli move --app-id Firefox --workspace 2
   cos-cli move -i 0 -w 2
   cos-cli move -a terminal -w 2 --wait 5
+  cos-cli move -a terminal -w 2 -o 1
 ";
 
 struct CliError(String);
@@ -90,6 +92,7 @@ struct MoveArgs {
     app_id: Option<String>,
     app_index: Option<usize>,
     workspace_name: String,
+    output_index: Option<usize>,
     wait: Option<u64>,
 }
 
@@ -124,10 +127,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 app_id,
                 app_index,
                 workspace_name: pargs.value_from_str(["-w", "--workspace"])?,
+                output_index: pargs.opt_value_from_str(["-o", "--output-index"])?,
                 wait: pargs.opt_value_from_fn("--wait", |v| v.parse())?,
             })
         }
-        Some("help") => {
+        Some("help") | None => {
             println!("{HELP}");
             return Ok(());
         }
@@ -136,10 +140,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 "Unknown subcommand: {}",
                 subcommand.unwrap_or_default()
             )));
-        }
-        None => {
-            println!("{HELP}");
-            return Ok(());
         }
     };
 
@@ -174,8 +174,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 println!("\tWorkspace: {workspace}");
             }
             println!("Outputs:");
-            for (_, name) in &state.outputs {
-                println!("\tOutput: {name}");
+            for (i, (_, name)) in state.outputs.iter().enumerate() {
+                println!("\t[{i}] Output: {name}");
             }
         }
         Command::Move(args) => {
@@ -243,7 +243,19 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 )));
             };
 
-            let output = state.outputs[0].0.clone();
+            let output = if let Some(index) = args.output_index {
+                if let Some(output) = state.outputs.get(index) {
+                    output.0.clone()
+                } else {
+                    return Err(CliError::new(format!("Output index not found: {}", index)));
+                }
+            } else {
+                if state.outputs.is_empty() {
+                    return Err(CliError::new("No outputs found.".to_string()));
+                }
+                state.outputs[0].0.clone()
+            };
+
             for app in apps_to_move {
                 println!(
                     "Move {} to {}",
