@@ -82,13 +82,16 @@ impl Dispatch<wl_output::WlOutput, ()> for AppState {
 // Implement Dispatch for the workspace manager to handle events like 'Workspace created'
 impl Dispatch<ext_workspace_manager_v1::ExtWorkspaceManagerV1, ()> for AppState {
     fn event(
-        _state: &mut Self,
+        state: &mut Self,
         _proxy: &ext_workspace_manager_v1::ExtWorkspaceManagerV1,
-        _event: ext_workspace_manager_v1::Event,
+        event: ext_workspace_manager_v1::Event,
         _data: &(),
         _conn: &Connection,
         _qh: &QueueHandle<Self>,
     ) {
+        if let ext_workspace_manager_v1::Event::WorkspaceGroup { workspace_group: _ } = event {
+            state.workspace_group.push(Vec::new())
+        }
     }
 
     event_created_child!(
@@ -111,7 +114,9 @@ impl Dispatch<ext_workspace_handle_v1::ExtWorkspaceHandleV1, ()> for AppState {
         _qh: &QueueHandle<Self>,
     ) {
         if let ext_workspace_handle_v1::Event::Name { name } = event {
-            state.workspaces.push((name, proxy.clone()));
+            if let Some(current_group) = state.workspace_group.last_mut() {
+                current_group.push((name, proxy.clone()));
+            }
         }
     }
 }

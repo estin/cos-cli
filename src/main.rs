@@ -14,15 +14,16 @@ Usage: cos-cli [COMMAND]
 A CLI utility for COSMIC Wayland toplevel and workspace management.
 
 Commands:
-  info                  List active apps, workspaces, and outputs
-  move                  Move an application to a specific workspace
+  info                          List active apps, workspaces, and outputs
+  move                          Move an application to a specific workspace
 
 Options for 'move':
-  -a, --app-id <ID>      The Application ID (partial match, case-insensitive)
-  -i, --index <INDEX>    The Application index from 'info' command
-  -w, --workspace <NAME> The name of the target workspace
-  -o, --output-index <INDEX> The output index from 'info' command (optional)
-  --wait <SECONDS>       Wait for the app to appear (optional, only for --app-id)
+  -a, --app-id <ID>             The Application ID (partial match, case-insensitive)
+  -i, --index <INDEX>           The Application index from 'info' command
+  -w, --workspace <NAME>        The name of the target workspace
+  -g, --workspace-group <INDEX> The workspace group index from 'info' command (optional)
+  -o, --output-index <INDEX>    The output index from 'info' command (optional)
+  --wait <SECONDS>              Wait for the app to appear (optional, only for --app-id)
 
 Examples:
   cos-cli info
@@ -30,6 +31,7 @@ Examples:
   cos-cli move -i 0 -w 2
   cos-cli move -a terminal -w 2 --wait 5
   cos-cli move -a terminal -w 2 -o 1
+  cos-cli move -a terminal -w 2 -g 1
 ";
 
 struct CliError(String);
@@ -71,7 +73,7 @@ impl From<&str> for CliError {
 }
 
 struct AppState {
-    workspaces: Vec<(String, ext_workspace_handle_v1::ExtWorkspaceHandleV1)>,
+    workspace_group: Vec<Vec<(String, ext_workspace_handle_v1::ExtWorkspaceHandleV1)>>,
     cosmic_toplevel_manager: Option<zcosmic_toplevel_manager_v1::ZcosmicToplevelManagerV1>,
     outputs: Vec<(wl_output::WlOutput, String)>,
     apps: Vec<App>,
@@ -92,6 +94,7 @@ struct MoveArgs {
     app_id: Option<String>,
     app_index: Option<usize>,
     workspace_name: String,
+    workspace_group_index: Option<usize>,
     output_index: Option<usize>,
     wait: Option<u64>,
 }
@@ -127,6 +130,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 app_id,
                 app_index,
                 workspace_name: pargs.value_from_str(["-w", "--workspace"])?,
+                workspace_group_index: pargs.opt_value_from_str(["-g", "--workspace-group"])?,
                 output_index: pargs.opt_value_from_str(["-o", "--output-index"])?,
                 wait: pargs.opt_value_from_fn("--wait", |v| v.parse())?,
             })
@@ -149,7 +153,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let mut state = AppState {
         cosmic_toplevel_manager: None,
-        workspaces: Vec::new(),
+        workspace_group: Vec::new(),
         apps: Vec::new(),
         outputs: Vec::new(),
     };
@@ -170,8 +174,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 );
             }
             println!("Workspaces:");
-            for (workspace, _) in &state.workspaces {
-                println!("\tWorkspace: {workspace}");
+            for (i, group) in state.workspace_group.iter().enumerate() {
+                println!("\t[{i}] Group");
+                for (workspace, _) in group {
+                    println!("\t\tWorkspace: {workspace}");
+                }
             }
             println!("Outputs:");
             for (i, (_, name)) in state.outputs.iter().enumerate() {
@@ -232,11 +239,23 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             };
             println!("Connected to cosmic toplevel manager!");
 
-            let Some((_, workspace)) = state
-                .workspaces
-                .iter()
-                .find(|(w, _)| w == &args.workspace_name)
-            else {
+            let Some((_, workspace)) = (if let Some(group_index) = args.workspace_group_index {
+                if let Some(group) = state.workspace_group.get(group_index) {
+                    group.iter().find(|(w, _)| w == &args.workspace_name)
+                } else {
+                    return Err(CliError::new(format!(
+                        "Workspace group not found: {}",
+                        group_index
+                    )));
+                }
+            } else {
+                state
+                    .workspace_group
+                    .iter()
+                    .map(|v| v.iter())
+                    .flatten()
+                    .find(|(w, _)| w == &args.workspace_name)
+            }) else {
                 return Err(CliError::new(format!(
                     "Workspace not found: {}",
                     args.workspace_name
