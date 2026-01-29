@@ -19,6 +19,7 @@ A CLI utility for COSMIC Wayland toplevel and workspace management.
 Commands:
   info                          List active apps, workspaces, and outputs
   move                          Move an application to a specific workspace
+  activate                      Activate an application on a specific seat
 
 Options for 'move':
   -a, --app-id <ID>             The Application ID (partial match, case-insensitive)
@@ -28,6 +29,10 @@ Options for 'move':
   -o, --output-index <INDEX>    The output index from 'info' command (optional)
   --wait <SECONDS>              Wait for the app to appear (optional, only for --app-id)
 
+Options for 'activate':
+  -i, --index <INDEX>           The Application index from 'info' command
+  -s, --seat <INDEX>            The Seat index from 'info' command (optional)
+
 Examples:
   cos-cli info
   cos-cli move --app-id Firefox --workspace 2
@@ -35,6 +40,8 @@ Examples:
   cos-cli move -a terminal -w 2 --wait 5
   cos-cli move -a terminal -w 2 -o 1
   cos-cli move -a terminal -w 2 -g 1
+  cos-cli activate -i 0 -s 0
+  cos-cli activate -i 0
 ";
 
 struct CliError(String);
@@ -103,9 +110,16 @@ struct MoveArgs {
     wait: Option<u64>,
 }
 
+#[derive(Debug)]
+struct ActivateArgs {
+    app_index: usize,
+    seat_index: Option<usize>,
+}
+
 enum Command {
     Info,
     Move(MoveArgs),
+    Activate(ActivateArgs),
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -139,6 +153,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 wait: pargs.opt_value_from_fn("--wait", |v| v.parse())?,
             })
         }
+        Some("activate") => Command::Activate(ActivateArgs {
+            app_index: pargs.value_from_str(["-i", "--index"])?,
+            seat_index: pargs.opt_value_from_str(["-s", "--seat"])?,
+        }),
         Some("help") | None => {
             println!("{HELP}");
             return Ok(());
@@ -291,9 +309,34 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     args.workspace_name,
                 );
                 manager.move_to_ext_workspace(&app.handle, workspace, &output);
-                // manager.activate(&app.handle, &state.seats.first().unwrap().0);
             }
 
+            conn.flush()?;
+        }
+        Command::Activate(args) => {
+            let Some(manager) = &state.cosmic_toplevel_manager else {
+                return Err(CliError::new(
+                    "Compositor does not support toplevel management protocol.".into(),
+                ));
+            };
+            let Some(app) = state.apps.get(args.app_index) else {
+                return Err(CliError::new(format!(
+                    "App index not found: {}",
+                    args.app_index
+                )));
+            };
+            let seat = if let Some(seat_index) = args.seat_index {
+                state
+                    .seats
+                    .get(seat_index)
+                    .ok_or_else(|| CliError::new(format!("Seat index not found: {}", seat_index)))?
+            } else {
+                state
+                    .seats
+                    .first()
+                    .ok_or_else(|| CliError::new("No seats found.".to_string()))?
+            };
+            manager.activate(&app.handle, &seat.0);
             conn.flush()?;
         }
     };
