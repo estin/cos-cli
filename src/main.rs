@@ -132,7 +132,12 @@ enum Command {
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
+    const VERSION: &str = env!("CARGO_PKG_VERSION");
     let mut pargs = pico_args::Arguments::from_env();
+    if pargs.contains(["-v", "--version"]) {
+        println!("Version: {}", VERSION);
+        return Ok(());
+    }
 
     let subcommand = pargs.subcommand()?;
 
