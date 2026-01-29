@@ -7,6 +7,7 @@ A CLI tool for managing windows and workspaces on the COSMIC Desktop Environment
 ## Features
 - **List Information**: View active applications, workspaces, and outputs.
 - **Window Management**: Move applications between workspaces by their App ID.
+- **Activate Application**: Bring a specific application to the foreground.
 - **Smart Wait**: Option to wait for an application to launch before moving it.
 
 ## Installation
