@@ -33,8 +33,12 @@ Options for 'activate':
   -i, --index <INDEX>           The Application index from 'info' command
   -s, --seat <INDEX>            The Seat index from 'info' command (optional)
 
+Options for 'info':
+  --json                        Output in JSON format
+
 Examples:
   cos-cli info
+  cos-cli info --json
   cos-cli move --app-id Firefox --workspace 2
   cos-cli move -i 0 -w 2
   cos-cli move -a terminal -w 2 --wait 5
@@ -116,8 +120,13 @@ struct ActivateArgs {
     seat_index: Option<usize>,
 }
 
+#[derive(Debug)]
+struct InfoArgs {
+    json: bool,
+}
+
 enum Command {
-    Info,
+    Info(InfoArgs),
     Move(MoveArgs),
     Activate(ActivateArgs),
 }
@@ -128,7 +137,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let subcommand = pargs.subcommand()?;
 
     let command = match subcommand.as_deref() {
-        Some("info") => Command::Info,
+        Some("info") => Command::Info(InfoArgs {
+            json: pargs.contains("--json"),
+        }),
         Some("move") => {
             let app_id: Option<String> = pargs.opt_value_from_str(["-a", "--app-id"])?;
             let app_index: Option<usize> = pargs.opt_value_from_str(["-i", "--index"])?;
@@ -186,31 +197,95 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     event_queue.roundtrip(&mut state)?;
 
     match command {
-        Command::Info => {
-            println!("Apps:");
-            for (i, app) in state.apps.iter().enumerate() {
-                println!(
-                    "\t[{}] {} (title: {})",
-                    i,
-                    app.app_id.as_deref().unwrap_or_default(),
-                    app.title.as_deref().unwrap_or_default()
-                );
-            }
-            println!("Workspaces:");
-            for (i, group) in state.workspace_group.iter().enumerate() {
-                println!("\t[{i}] Group");
-                for (workspace, _) in group {
-                    println!("\t\tWorkspace: {workspace}");
-                }
-            }
-            println!("Outputs:");
-            for (i, (_, name)) in state.outputs.iter().enumerate() {
-                println!("\t[{i}] Output: {name}");
-            }
+        Command::Info(args) => {
+            if args.json {
+                let mut json = String::new();
+                json.push_str("{");
 
-            println!("Seats:");
-            for (i, (_, name)) in state.seats.iter().enumerate() {
-                println!("\t[{i}] Seat: {name}");
+                json.push_str("\"apps\":[");
+                for (i, app) in state.apps.iter().enumerate() {
+                    if i > 0 {
+                        json.push_str(",");
+                    }
+                    json.push_str(&format!(
+                        "{{\"index\":{},\"app_id\":\"{}\",\"title\":\"{}\"}}",
+                        i,
+                        json_escape(app.app_id.as_deref().unwrap_or_default()),
+                        json_escape(app.title.as_deref().unwrap_or_default())
+                    ));
+                }
+                json.push_str("],");
+
+                json.push_str("\"workspaces\":[");
+                for (i, group) in state.workspace_group.iter().enumerate() {
+                    if i > 0 {
+                        json.push_str(",");
+                    }
+                    json.push_str(&format!("{{\"index\":{},\"workspaces\":[", i));
+                    for (j, (workspace, _)) in group.iter().enumerate() {
+                        if j > 0 {
+                            json.push_str(",");
+                        }
+                        json.push_str(&format!("{{\"name\":\"{}\"}}", json_escape(workspace)));
+                    }
+                    json.push_str("]}");
+                }
+                json.push_str("],");
+
+                json.push_str("\"outputs\":[");
+                for (i, (_, name)) in state.outputs.iter().enumerate() {
+                    if i > 0 {
+                        json.push_str(",");
+                    }
+                    json.push_str(&format!(
+                        "{{\"index\":{},\"name\":\"{}\"}}",
+                        i,
+                        json_escape(name)
+                    ));
+                }
+                json.push_str("],");
+
+                json.push_str("\"seats\":[");
+                for (i, (_, name)) in state.seats.iter().enumerate() {
+                    if i > 0 {
+                        json.push_str(",");
+                    }
+                    json.push_str(&format!(
+                        "{{\"index\":{},\"name\":\"{}\"}}",
+                        i,
+                        json_escape(name)
+                    ));
+                }
+                json.push_str("]");
+
+                json.push_str("}");
+                println!("{}", json);
+            } else {
+                println!("Apps:");
+                for (i, app) in state.apps.iter().enumerate() {
+                    println!(
+                        "\t[{}] {} (title: {})",
+                        i,
+                        app.app_id.as_deref().unwrap_or_default(),
+                        app.title.as_deref().unwrap_or_default()
+                    );
+                }
+                println!("Workspaces:");
+                for (i, group) in state.workspace_group.iter().enumerate() {
+                    println!("\t[{i}] Group");
+                    for (workspace, _) in group {
+                        println!("\t\tWorkspace: {workspace}");
+                    }
+                }
+                println!("Outputs:");
+                for (i, (_, name)) in state.outputs.iter().enumerate() {
+                    println!("\t[{i}] Output: {name}");
+                }
+
+                println!("Seats:");
+                for (i, (_, name)) in state.seats.iter().enumerate() {
+                    println!("\t[{i}] Seat: {name}");
+                }
             }
         }
         Command::Move(args) => {
@@ -342,4 +417,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     };
 
     Ok(())
+}
+
+fn json_escape(s: &str) -> String {
+    s.replace('\\', "\\\\").replace('"', "\\\"")
 }
