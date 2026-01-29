@@ -70,12 +70,18 @@ Move an application to a specific workspace.
 cos-cli move --app-id <ID> --workspace <NAME>
 ````
 Arguments:
-  -a, --app-id <ID>             The Application ID (partial match, case-insensitive)
-  -i, --index <INDEX>           The Application index from 'info' command
-  -w, --workspace <NAME>        The name of the target workspace
-  -g, --workspace-group <INDEX> The workspace group index from 'info' command (optional)
-  -o, --output-index <INDEX>    The output index from 'info' command (optional)
-  --wait <SECONDS>              Wait for the app to appear (optional, only for --app-id)
+*   `-a, --app-id <ID>`  
+    The Application ID (partial match, case-insensitive)
+*   `-i, --index <INDEX>`  
+    The Application index from 'info' command
+*   `-w, --workspace <NAME>`  
+    The name of the target workspace
+*   `-g, --workspace-group <INDEX>`  
+    The workspace group index from 'info' command (optional)
+*   `-o, --output-index <INDEX>`  
+    The output index from 'info' command (optional)
+*   `--wait <SECONDS>`  
+    Wait for the app to appear (optional, only for --app-id)
 
 #### `activate`
 Activate an application.
@@ -83,5 +89,7 @@ Activate an application.
 cos-cli activate --index <INDEX>
 ````
 Arguments:
-  -i, --index <INDEX>           The Application index from 'info' command
-  -s, --seat <INDEX>            The Seat index from 'info' command (optional)
+*   `-i, --index <INDEX>`  
+    The Application index from 'info' command
+*   `-s, --seat <INDEX>`  
+    The Seat index from 'info' command (optional)
