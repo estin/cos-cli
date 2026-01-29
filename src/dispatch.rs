@@ -2,7 +2,14 @@ use cosmic_protocols::toplevel_info::v1::client::{
     zcosmic_toplevel_handle_v1, zcosmic_toplevel_info_v1,
 };
 use cosmic_protocols::toplevel_management::v1::client::zcosmic_toplevel_manager_v1;
+// use cosmic_protocols::workspace::v1::client::{
+//     zcosmic_workspace_group_handle_v1, zcosmic_workspace_manager_v1,
+// };
+// use cosmic_protocols::workspace::v2::client::{
+//     zcosmic_workspace_handle_v2, zcosmic_workspace_manager_v2,
+// };
 
+use wayland_client::protocol::wl_seat;
 use wayland_client::{
     Connection, Dispatch, QueueHandle, event_created_child,
     protocol::{wl_output, wl_registry},
@@ -29,6 +36,9 @@ impl Dispatch<wl_registry::WlRegistry, ()> for AppState {
         } = event
         {
             match interface.as_str() {
+                "wl_seat" => {
+                    proxy.bind::<wl_seat::WlSeat, _, _>(name, 4, qh, ());
+                }
                 "wl_output" => {
                     proxy.bind::<wl_output::WlOutput, _, _>(name, 4, qh, ());
                 }
@@ -58,6 +68,31 @@ impl Dispatch<wl_registry::WlRegistry, ()> for AppState {
                         ),
                     );
                 }
+
+                // "zcosmic_workspace_manager_v1" => {
+                //     proxy.bind::<zcosmic_workspace_manager_v1::ZcosmicWorkspaceManagerV1, _, _>(
+                //         name,
+                //         version,
+                //         qh,
+                //         (),
+                //     );
+                // }
+                // "zcosmic_workspace_manager_v2" => {
+                //     proxy.bind::<zcosmic_workspace_manager_v2::ZcosmicWorkspaceManagerV2, _, _>(
+                //         name,
+                //         version,
+                //         qh,
+                //         (),
+                //     );
+                // }
+                // "zcosmic_workspace_handle_v2" => {
+                //     proxy.bind::<zcosmic_workspace_handle_v2::ZcosmicWorkspaceHandleV2, _, _>(
+                //         name,
+                //         version,
+                //         qh,
+                //         (),
+                //     );
+                // }
                 _ => {}
             }
         }
@@ -75,6 +110,21 @@ impl Dispatch<wl_output::WlOutput, ()> for AppState {
     ) {
         if let wl_output::Event::Name { name } = event {
             app_data.outputs.push((output.clone(), name));
+        }
+    }
+}
+
+impl Dispatch<wl_seat::WlSeat, ()> for AppState {
+    fn event(
+        app_data: &mut Self,
+        seat: &wl_seat::WlSeat,
+        event: wl_seat::Event,
+        _: &(),
+        _: &Connection,
+        _: &QueueHandle<AppState>,
+    ) {
+        if let wl_seat::Event::Name { name } = event {
+            app_data.seats.push((seat.clone(), name));
         }
     }
 }
@@ -113,11 +163,10 @@ impl Dispatch<ext_workspace_handle_v1::ExtWorkspaceHandleV1, ()> for AppState {
         _conn: &Connection,
         _qh: &QueueHandle<Self>,
     ) {
-        if let ext_workspace_handle_v1::Event::Name { name } = event {
-            if let Some(current_group) = state.workspace_group.last_mut() {
+        if let ext_workspace_handle_v1::Event::Name { name } = event
+            && let Some(current_group) = state.workspace_group.last_mut() {
                 current_group.push((name, proxy.clone()));
             }
-        }
     }
 }
 
@@ -244,3 +293,64 @@ impl Dispatch<zcosmic_toplevel_handle_v1::ZcosmicToplevelHandleV1, ()> for AppSt
         }
     }
 }
+
+// impl Dispatch<zcosmic_workspace_manager_v1::ZcosmicWorkspaceManagerV1, ()> for AppState {
+//     fn event(
+//         _state: &mut Self,
+//         _proxy: &zcosmic_workspace_manager_v1::ZcosmicWorkspaceManagerV1,
+//         event: zcosmic_workspace_manager_v1::Event,
+//         _data: &(),
+//         _conn: &Connection,
+//         _qh: &QueueHandle<Self>,
+//     ) {
+//         println!("Event {event:?}");
+//     }
+
+//     event_created_child!(
+//         AppState,
+//         zcosmic_workspace_manager_v1::ZcosmicWorkspaceManagerV1,
+//         [
+//             zcosmic_workspace_manager_v1::EVT_WORKSPACE_GROUP_OPCODE=> (zcosmic_workspace_group_handle_v1::ZcosmicWorkspaceGroupHandleV1, ()),
+//         ]
+//     );
+// }
+
+// impl Dispatch<zcosmic_workspace_group_handle_v1::ZcosmicWorkspaceGroupHandleV1, ()> for AppState {
+//     fn event(
+//         _state: &mut Self,
+//         _proxy: &zcosmic_workspace_group_handle_v1::ZcosmicWorkspaceGroupHandleV1,
+//         event: zcosmic_workspace_group_handle_v1::Event,
+//         _data: &(),
+//         _conn: &Connection,
+//         _qh: &QueueHandle<Self>,
+//     ) {
+//         println!("Event {event:?}");
+//     }
+// }
+
+// impl Dispatch<zcosmic_workspace_manager_v2::ZcosmicWorkspaceManagerV2, ()> for AppState {
+//     fn event(
+//         _state: &mut Self,
+//         _proxy: &zcosmic_workspace_manager_v2::ZcosmicWorkspaceManagerV2,
+//         event: zcosmic_workspace_manager_v2::Event,
+//         _data: &(),
+//         _conn: &Connection,
+//         _qh: &QueueHandle<Self>,
+//     ) {
+//         println!("Event {event:?}");
+//     }
+
+// }
+
+// impl Dispatch<zcosmic_workspace_handle_v2::ZcosmicWorkspaceHandleV2, ()> for AppState {
+//     fn event(
+//         _state: &mut Self,
+//         _proxy: &zcosmic_workspace_handle_v2::ZcosmicWorkspaceHandleV2,
+//         event: zcosmic_workspace_handle_v2::Event,
+//         _data: &(),
+//         _conn: &Connection,
+//         _qh: &QueueHandle<Self>,
+//     ) {
+//         println!("Event {event:?}");
+//     }
+// }

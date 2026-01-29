@@ -3,7 +3,10 @@ use cosmic_protocols::toplevel_management::v1::client::zcosmic_toplevel_manager_
 use std::error::Error;
 use std::fmt;
 
-use wayland_client::{Connection, protocol::wl_output};
+use wayland_client::{
+    Connection,
+    protocol::{wl_output, wl_seat},
+};
 use wayland_protocols::ext::workspace::v1::client::ext_workspace_handle_v1;
 
 mod dispatch;
@@ -76,6 +79,7 @@ struct AppState {
     workspace_group: Vec<Vec<(String, ext_workspace_handle_v1::ExtWorkspaceHandleV1)>>,
     cosmic_toplevel_manager: Option<zcosmic_toplevel_manager_v1::ZcosmicToplevelManagerV1>,
     outputs: Vec<(wl_output::WlOutput, String)>,
+    seats: Vec<(wl_seat::WlSeat, String)>,
     apps: Vec<App>,
 }
 
@@ -156,6 +160,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         workspace_group: Vec::new(),
         apps: Vec::new(),
         outputs: Vec::new(),
+        seats: Vec::new(),
     };
     let _registry = conn.display().get_registry(&qh, ());
 
@@ -183,6 +188,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             println!("Outputs:");
             for (i, (_, name)) in state.outputs.iter().enumerate() {
                 println!("\t[{i}] Output: {name}");
+            }
+
+            println!("Seats:");
+            for (i, (_, name)) in state.seats.iter().enumerate() {
+                println!("\t[{i}] Seat: {name}");
             }
         }
         Command::Move(args) => {
@@ -252,8 +262,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 state
                     .workspace_group
                     .iter()
-                    .map(|v| v.iter())
-                    .flatten()
+                    .flat_map(|v| v.iter())
                     .find(|(w, _)| w == &args.workspace_name)
             }) else {
                 return Err(CliError::new(format!(
@@ -282,6 +291,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     args.workspace_name,
                 );
                 manager.move_to_ext_workspace(&app.handle, workspace, &output);
+                // manager.activate(&app.handle, &state.seats.first().unwrap().0);
             }
 
             conn.flush()?;
