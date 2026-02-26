@@ -4,7 +4,7 @@ use std::error::Error;
 use std::fmt;
 
 use wayland_client::{
-    Connection,
+    Connection, EventQueue,
     protocol::{wl_output, wl_seat},
 };
 use wayland_protocols::ext::workspace::v1::client::ext_workspace_handle_v1;
@@ -20,6 +20,7 @@ Commands:
   info                          List active apps, workspaces, and outputs
   move                          Move an application to a specific workspace
   activate                      Activate an application on a specific seat
+  state                         Set state of an application
 
 Options for 'move':
   -a, --app-id <ID>             The Application ID (partial match, case-insensitive)
@@ -32,6 +33,19 @@ Options for 'move':
 Options for 'activate':
   -i, --index <INDEX>           The Application index from 'info' command
   -s, --seat <INDEX>            The Seat index from 'info' command (optional)
+
+Options for 'state':
+  -a, --app-id <ID>             The Application ID (partial match, case-insensitive)
+  -i, --index <INDEX>           The Application index from 'info' command
+  --wait <SECONDS>              Wait for the app to appear (optional, only for --app-id)
+  --maximize
+  --unmaximize
+  --minimize
+  --unminimize
+  --fullscreen
+  --unfullscreen
+  --sticky
+  --unsticky
 
 Options for 'info':
   --json                        Output in JSON format
@@ -46,6 +60,8 @@ Examples:
   cos-cli move -a terminal -w 2 -g 1
   cos-cli activate -i 0 -s 0
   cos-cli activate -i 0
+  cos-cli state -i 0 --maximize
+  cos-cli state --app-id firefox --sticky --fullscreen
 ";
 
 struct CliError(String);
@@ -121,6 +137,55 @@ struct ActivateArgs {
 }
 
 #[derive(Debug)]
+struct StateArgs {
+    app_id: Option<String>,
+    app_index: Option<usize>,
+    wait: Option<u64>,
+    maximize: bool,
+    unmaximize: bool,
+    minimize: bool,
+    unminimize: bool,
+    fullscreen: bool,
+    unfullscreen: bool,
+    sticky: bool,
+    unsticky: bool,
+}
+
+trait AppFinderArgs {
+    fn app_index(&self) -> Option<usize>;
+    fn app_id(&self) -> Option<&String>;
+    fn wait(&self) -> Option<u64>;
+}
+
+impl AppFinderArgs for MoveArgs {
+    fn app_index(&self) -> Option<usize> {
+        self.app_index
+    }
+
+    fn app_id(&self) -> Option<&String> {
+        self.app_id.as_ref()
+    }
+
+    fn wait(&self) -> Option<u64> {
+        self.wait
+    }
+}
+
+impl AppFinderArgs for StateArgs {
+    fn app_index(&self) -> Option<usize> {
+        self.app_index
+    }
+
+    fn app_id(&self) -> Option<&String> {
+        self.app_id.as_ref()
+    }
+
+    fn wait(&self) -> Option<u64> {
+        self.wait
+    }
+}
+
+#[derive(Debug)]
 struct InfoArgs {
     json: bool,
 }
@@ -129,6 +194,59 @@ enum Command {
     Info(InfoArgs),
     Move(MoveArgs),
     Activate(ActivateArgs),
+    State(StateArgs),
+}
+
+fn find_apps<T: AppFinderArgs>(
+    state: &mut AppState,
+    event_queue: &mut EventQueue<AppState>,
+    args: &T,
+) -> Result<Vec<App>, Box<dyn Error>> {
+    if let Some(app_index) = args.app_index() {
+        if let Some(app) = state.apps.get(app_index) {
+            Ok(vec![app.clone()])
+        } else {
+            Err(CliError::new(format!("App index not found: {}", app_index)))
+        }
+    } else if let Some(app_id) = args.app_id() {
+        let sleep = std::time::Duration::from_millis(500);
+        let wait_dur = args.wait().map(std::time::Duration::from_secs);
+        let now = std::time::Instant::now();
+        let mut apps;
+        loop {
+            apps = state
+                .apps
+                .iter()
+                .filter(|app| {
+                    app.app_id
+                        .as_ref()
+                        .map(|v| v.to_lowercase().contains(&app_id.to_lowercase()))
+                        .unwrap_or_default()
+                })
+                .cloned()
+                .collect::<Vec<_>>();
+
+            if !apps.is_empty() {
+                break;
+            }
+
+            if let Some(wait) = wait_dur {
+                if now.elapsed() > wait {
+                    break;
+                }
+                std::thread::sleep(sleep);
+                event_queue.roundtrip(state)?;
+            } else {
+                break;
+            }
+        }
+        if apps.is_empty() {
+            return Err(CliError::new(format!("App id not found: {}", app_id)));
+        }
+        Ok(apps)
+    } else {
+        unreachable!(); // Already handled by arg parsing
+    }
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -173,6 +291,56 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             app_index: pargs.value_from_str(["-i", "--index"])?,
             seat_index: pargs.opt_value_from_str(["-s", "--seat"])?,
         }),
+        Some("state") => {
+            let app_id: Option<String> = pargs.opt_value_from_str(["-a", "--app-id"])?;
+            let app_index: Option<usize> = pargs.opt_value_from_str(["-i", "--index"])?;
+
+            if app_id.is_none() && app_index.is_none() {
+                return Err(CliError::new(
+                    "Either --app-id or --index must be provided for 'state' command.".into(),
+                ));
+            }
+            if app_id.is_some() && app_index.is_some() {
+                return Err(CliError::new(
+                    "Only one of --app-id or --index can be provided for 'state' command.".into(),
+                ));
+            }
+
+            let args = StateArgs {
+                app_id,
+                app_index,
+                wait: pargs.opt_value_from_fn("--wait", |v| v.parse())?,
+                maximize: pargs.contains("--maximize"),
+                unmaximize: pargs.contains("--unmaximize"),
+                minimize: pargs.contains("--minimize"),
+                unminimize: pargs.contains("--unminimize"),
+                fullscreen: pargs.contains("--fullscreen"),
+                unfullscreen: pargs.contains("--unfullscreen"),
+                sticky: pargs.contains("--sticky"),
+                unsticky: pargs.contains("--unsticky"),
+            };
+            let num_actions = [
+                args.maximize,
+                args.unmaximize,
+                args.minimize,
+                args.unminimize,
+                args.fullscreen,
+                args.unfullscreen,
+                args.sticky,
+                args.unsticky,
+            ]
+            .iter()
+            .filter(|&&x| x)
+            .count();
+
+            if num_actions == 0 {
+                return Err(CliError::new(
+                    "No action specified for 'state' command.".into(),
+                ));
+            }
+
+            Command::State(args)
+        }
         Some("help") | None => {
             println!("{HELP}");
             return Ok(());
@@ -294,51 +462,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
         }
         Command::Move(args) => {
-            let apps_to_move: Vec<App> = if let Some(app_index) = args.app_index {
-                if let Some(app) = state.apps.get(app_index) {
-                    vec![app.clone()]
-                } else {
-                    return Err(CliError::new(format!("App index not found: {}", app_index)));
-                }
-            } else if let Some(app_id) = &args.app_id {
-                let sleep = std::time::Duration::from_millis(500);
-                let wait_dur = args.wait.map(std::time::Duration::from_secs);
-                let now = std::time::Instant::now();
-                let mut apps;
-                loop {
-                    apps = state
-                        .apps
-                        .iter()
-                        .filter(|app| {
-                            app.app_id
-                                .as_ref()
-                                .map(|v| v.to_lowercase().contains(&app_id.to_lowercase()))
-                                .unwrap_or_default()
-                        })
-                        .cloned()
-                        .collect::<Vec<_>>();
-
-                    if !apps.is_empty() {
-                        break;
-                    }
-
-                    if let Some(wait) = wait_dur {
-                        if now.elapsed() > wait {
-                            break;
-                        }
-                        std::thread::sleep(sleep);
-                        event_queue.roundtrip(&mut state)?;
-                    } else {
-                        break;
-                    }
-                }
-                if apps.is_empty() {
-                    return Err(CliError::new(format!("App id not found: {}", app_id)));
-                }
-                apps
-            } else {
-                unreachable!(); // Already handled by arg parsing
-            };
+            let apps_to_move = find_apps(&mut state, &mut event_queue, &args)?;
 
             let Some(manager) = &state.cosmic_toplevel_manager else {
                 return Err(CliError::new(
@@ -417,6 +541,44 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     .ok_or_else(|| CliError::new("No seats found.".to_string()))?
             };
             manager.activate(&app.handle, &seat.0);
+            conn.flush()?;
+        }
+        Command::State(args) => {
+            let apps_to_modify = find_apps(&mut state, &mut event_queue, &args)?;
+
+            let Some(manager) = &state.cosmic_toplevel_manager else {
+                return Err(CliError::new(
+                    "Compositor does not support toplevel management protocol.".into(),
+                ));
+            };
+
+            for app in apps_to_modify {
+                if args.maximize {
+                    manager.set_maximized(&app.handle);
+                }
+                if args.unmaximize {
+                    manager.unset_maximized(&app.handle);
+                }
+                if args.minimize {
+                    manager.set_minimized(&app.handle);
+                }
+                if args.unminimize {
+                    manager.unset_minimized(&app.handle);
+                }
+                if args.fullscreen {
+                    manager.set_fullscreen(&app.handle, None);
+                }
+                if args.unfullscreen {
+                    manager.unset_fullscreen(&app.handle);
+                }
+                if args.sticky {
+                    manager.set_sticky(&app.handle);
+                }
+                if args.unsticky {
+                    manager.unset_sticky(&app.handle);
+                }
+            }
+
             conn.flush()?;
         }
     };

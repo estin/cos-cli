@@ -164,9 +164,10 @@ impl Dispatch<ext_workspace_handle_v1::ExtWorkspaceHandleV1, ()> for AppState {
         _qh: &QueueHandle<Self>,
     ) {
         if let ext_workspace_handle_v1::Event::Name { name } = event
-            && let Some(current_group) = state.workspace_group.last_mut() {
-                current_group.push((name, proxy.clone()));
-            }
+            && let Some(current_group) = state.workspace_group.last_mut()
+        {
+            current_group.push((name, proxy.clone()));
+        }
     }
 }
 

@@ -94,3 +94,39 @@ Arguments:
     The Application index from 'info' command
 *   `-s, --seat <INDEX>`  
     The Seat index from 'info' command (optional)
+
+#### `state`
+Set the state of an application's window (e.g., maximize, minimize, fullscreen, sticky).
+````console
+cos-cli state (--app-id <ID> | --index <INDEX>) [--wait <SECONDS>] [--maximize|--unmaximize] [--minimize|--unminimize] [--fullscreen|--unfullscreen] [--sticky|--unsticky]
+````
+Arguments:
+*   `-a, --app-id <ID>`  
+    The Application ID (partial match, case-insensitive)
+*   `-i, --index <INDEX>`  
+    The Application index from 'info' command
+*   `--wait <SECONDS>`  
+    Wait for the app to appear (optional, only for --app-id)
+*   `--maximize`  
+    Maximize the application window
+*   `--unmaximize`  
+    Unmaximize the application window
+*   `--minimize`  
+    Minimize the application window
+*   `--unminimize`  
+    Unminimize the application window
+*   `--fullscreen`  
+    Set the application window to fullscreen
+*   `--unfullscreen`  
+    Unset the application window from fullscreen
+*   `--sticky`  
+    Make the application window sticky (visible on all workspaces)
+*   `--unsticky`  
+    Unset the application window from being sticky
+
+Examples:
+````console
+cos-cli state -i 0 --maximize
+cos-cli state --app-id firefox --sticky --fullscreen --wait 5
+cos-cli state -i 1 --unminimize
+````
