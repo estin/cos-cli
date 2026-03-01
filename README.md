@@ -31,15 +31,15 @@ cos-cli [COMMAND]
 ### Commands
 
 #### `info`
-List all available apps, workspaces, outputs and seats.
+List all available apps, workspaces, outputs and seats, including the state of each app window.
 ````console
 cos-cli info
 ````
 Example output:
 ````
 Apps:
-	[0] firefox (title: Gemini - Mozilla Firefox)
-	[1] org.wezfurlong.wezterm (title: cos-cli)
+	[0] firefox (title: Gemini - Mozilla Firefox, state: [activated])
+	[1] org.wezfurlong.wezterm (title: cos-cli, state: [maximized])
 Workspaces:
 	[0] Group
 		Workspace: 1
@@ -57,7 +57,7 @@ cos-cli info --json
 ````
 Example output:
 ````json
-{"apps":[{"index":0,"app_id":"firefox","title":"Gemini - Mozilla Firefox"},{"index":1,"app_id":"org.wezfurlong.wezterm","title":"cos-cli"}],"workspaces":[{"index":0,"workspaces":[{"name":"1"},{"name":"2"},{"name":"3"}]}],"outputs":[{"index":0,"name":"eDP-1"}],"seats":[{"index":0,"name":"seat0"}]}
+{"apps":[{"index":0,"app_id":"firefox","title":"Gemini - Mozilla Firefox","state":["activated"]},{"index":1,"app_id":"org.wezfurlong.wezterm","title":"cos-cli","state":["maximized"]}],"workspaces":[{"index":0,"workspaces":[{"name":"1"},{"name":"2"},{"name":"3"}]}],"outputs":[{"index":0,"name":"eDP-1"}],"seats":[{"index":0,"name":"seat0"}]}
 ````
 
 Using `jq` to find app index by pattern and activate app
@@ -71,17 +71,17 @@ Move an application to a specific workspace.
 cos-cli move --app-id <ID> --workspace <NAME>
 ````
 Arguments:
-*   `-a, --app-id <ID>`  
+*   `-a, --app-id <ID>`
     The Application ID (partial match, case-insensitive)
-*   `-i, --index <INDEX>`  
+*   `-i, --index <INDEX>`
     The Application index from 'info' command
-*   `-w, --workspace <NAME>`  
+*   `-w, --workspace <NAME>`
     The name of the target workspace
-*   `-g, --workspace-group <INDEX>`  
+*   `-g, --workspace-group <INDEX>`
     The workspace group index from 'info' command (optional)
-*   `-o, --output-index <INDEX>`  
+*   `-o, --output-index <INDEX>`
     The output index from 'info' command (optional)
-*   `--wait <SECONDS>`  
+*   `--wait <SECONDS>`
     Wait for the app to appear (optional, only for --app-id)
 
 #### `activate`
@@ -90,9 +90,9 @@ Activate an application.
 cos-cli activate --index <INDEX>
 ````
 Arguments:
-*   `-i, --index <INDEX>`  
+*   `-i, --index <INDEX>`
     The Application index from 'info' command
-*   `-s, --seat <INDEX>`  
+*   `-s, --seat <INDEX>`
     The Seat index from 'info' command (optional)
 
 #### `state`
@@ -101,27 +101,27 @@ Set the state of an application's window (e.g., maximize, minimize, fullscreen, 
 cos-cli state (--app-id <ID> | --index <INDEX>) [--wait <SECONDS>] [--maximize|--unmaximize] [--minimize|--unminimize] [--fullscreen|--unfullscreen] [--sticky|--unsticky]
 ````
 Arguments:
-*   `-a, --app-id <ID>`  
+*   `-a, --app-id <ID>`
     The Application ID (partial match, case-insensitive)
-*   `-i, --index <INDEX>`  
+*   `-i, --index <INDEX>`
     The Application index from 'info' command
-*   `--wait <SECONDS>`  
+*   `--wait <SECONDS>`
     Wait for the app to appear (optional, only for --app-id)
-*   `--maximize`  
+*   `--maximize`
     Maximize the application window
-*   `--unmaximize`  
+*   `--unmaximize`
     Unmaximize the application window
-*   `--minimize`  
+*   `--minimize`
     Minimize the application window
-*   `--unminimize`  
+*   `--unminimize`
     Unminimize the application window
-*   `--fullscreen`  
+*   `--fullscreen`
     Set the application window to fullscreen
-*   `--unfullscreen`  
+*   `--unfullscreen`
     Unset the application window from fullscreen
-*   `--sticky`  
+*   `--sticky`
     Make the application window sticky (visible on all workspaces)
-*   `--unsticky`  
+*   `--unsticky`
     Unset the application window from being sticky
 
 Examples:

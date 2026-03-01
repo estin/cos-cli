@@ -18,7 +18,7 @@ use wayland_protocols::ext::workspace::v1::client::{
     ext_workspace_group_handle_v1, ext_workspace_handle_v1, ext_workspace_manager_v1,
 };
 
-use crate::{App, AppState};
+use crate::{App, AppState, State};
 
 impl Dispatch<wl_registry::WlRegistry, ()> for AppState {
     fn event(
@@ -211,7 +211,7 @@ impl Dispatch<zcosmic_toplevel_info_v1::ZcosmicToplevelInfoV1, ()> for AppState 
                 app_id: None,
                 outputs: Vec::new(),
                 // workspaces: Vec::new(),
-                // state: Vec::new(),
+                state: Vec::new(),
             })
         }
     }
@@ -277,19 +277,15 @@ impl Dispatch<zcosmic_toplevel_handle_v1::ZcosmicToplevelHandleV1, ()> for AppSt
             //         info.workspaces.retain(|w| w != &workspace);
             //     }
             // }
-            // zcosmic_toplevel_handle_v1::Event::State { state } => {
-            //     if let Some(info) = app_data
-            //         .toplevels
-            //         .iter_mut()
-            //         .find(|t| &t.handle == toplevel)
-            //     {
-            //         info.state = state
-            //             .chunks_exact(4)
-            //             .map(|chunk| u32::from_ne_bytes(chunk.try_into().unwrap()))
-            //             .flat_map(|val| State::try_from(val).ok())
-            //             .collect::<Vec<_>>();
-            //     }
-            // }
+            zcosmic_toplevel_handle_v1::Event::State { state } => {
+                if let Some(info) = app_data.apps.iter_mut().find(|t| &t.handle == toplevel) {
+                    info.state = state
+                        .chunks_exact(4)
+                        .map(|chunk| u32::from_ne_bytes(chunk.try_into().unwrap()))
+                        .flat_map(|val| State::try_from(val).ok())
+                        .collect::<Vec<_>>();
+                }
+            }
             _ => {}
         }
     }

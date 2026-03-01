@@ -117,7 +117,40 @@ struct App {
     app_id: Option<String>,
     outputs: Vec<wl_output::WlOutput>,
     // workspaces: Vec<zcosmic_workspace_handle_v1::ZcosmicWorkspaceHandleV1>,
-    // state: Vec<State>,
+    state: Vec<State>,
+}
+
+#[derive(Debug, PartialEq, Clone)]
+pub enum State {
+    Maximized = 0,
+    Minimized = 1,
+    Activated = 2,
+    Fullscreen = 3,
+}
+
+impl TryFrom<u32> for State {
+    type Error = ();
+
+    fn try_from(value: u32) -> Result<Self, Self::Error> {
+        match value {
+            0 => Ok(State::Maximized),
+            1 => Ok(State::Minimized),
+            2 => Ok(State::Activated),
+            3 => Ok(State::Fullscreen),
+            _ => Err(()),
+        }
+    }
+}
+
+impl fmt::Display for State {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        f.write_str(match self {
+            State::Maximized => "maximized",
+            State::Minimized => "minimized",
+            State::Fullscreen => "fullscreen",
+            State::Activated => "activated",
+        })
+    }
 }
 
 #[derive(Debug)]
@@ -373,18 +406,25 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         Command::Info(args) => {
             if args.json {
                 let mut json = String::new();
-                json.push_str("{");
+                json.push('{');
 
                 json.push_str("\"apps\":[");
                 for (i, app) in state.apps.iter().enumerate() {
                     if i > 0 {
-                        json.push_str(",");
+                        json.push(',');
                     }
+                    let states = app
+                        .state
+                        .iter()
+                        .map(|s| format!("\"{}\"", s))
+                        .collect::<Vec<_>>()
+                        .join(",");
                     json.push_str(&format!(
-                        "{{\"index\":{},\"app_id\":\"{}\",\"title\":\"{}\"}}",
+                        "{{\"index\":{},\"app_id\":\"{}\",\"title\":\"{}\",\"state\":[{}]}}",
                         i,
                         json_escape(app.app_id.as_deref().unwrap_or_default()),
-                        json_escape(app.title.as_deref().unwrap_or_default())
+                        json_escape(app.title.as_deref().unwrap_or_default()),
+                        states
                     ));
                 }
                 json.push_str("],");
@@ -392,12 +432,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 json.push_str("\"workspaces\":[");
                 for (i, group) in state.workspace_group.iter().enumerate() {
                     if i > 0 {
-                        json.push_str(",");
+                        json.push(',');
                     }
                     json.push_str(&format!("{{\"index\":{},\"workspaces\":[", i));
                     for (j, (workspace, _)) in group.iter().enumerate() {
                         if j > 0 {
-                            json.push_str(",");
+                            json.push(',');
                         }
                         json.push_str(&format!("{{\"name\":\"{}\"}}", json_escape(workspace)));
                     }
@@ -408,7 +448,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 json.push_str("\"outputs\":[");
                 for (i, (_, name)) in state.outputs.iter().enumerate() {
                     if i > 0 {
-                        json.push_str(",");
+                        json.push(',');
                     }
                     json.push_str(&format!(
                         "{{\"index\":{},\"name\":\"{}\"}}",
@@ -421,7 +461,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 json.push_str("\"seats\":[");
                 for (i, (_, name)) in state.seats.iter().enumerate() {
                     if i > 0 {
-                        json.push_str(",");
+                        json.push(',');
                     }
                     json.push_str(&format!(
                         "{{\"index\":{},\"name\":\"{}\"}}",
@@ -429,18 +469,25 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         json_escape(name)
                     ));
                 }
-                json.push_str("]");
+                json.push(']');
 
-                json.push_str("}");
+                json.push('}');
                 println!("{}", json);
             } else {
                 println!("Apps:");
                 for (i, app) in state.apps.iter().enumerate() {
+                    let states = app
+                        .state
+                        .iter()
+                        .map(|s| s.to_string())
+                        .collect::<Vec<_>>()
+                        .join(", ");
                     println!(
-                        "\t[{}] {} (title: {})",
+                        "\t[{}] {} (title: {}, state: [{}])",
                         i,
                         app.app_id.as_deref().unwrap_or_default(),
-                        app.title.as_deref().unwrap_or_default()
+                        app.title.as_deref().unwrap_or_default(),
+                        states
                     );
                 }
                 println!("Workspaces:");
