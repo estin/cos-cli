@@ -8,3 +8,5 @@ wayland-client = "0.31"
 wayland-protocols = { version = "0.32", features = ["client", "staging"] }
 cosmic-protocols = { git = "https://github.com/pop-os/cosmic-protocols", features = ["client"] }
 pico-args = "0.5"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }

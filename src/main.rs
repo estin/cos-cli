@@ -1,5 +1,6 @@
 use cosmic_protocols::toplevel_info::v1::client::zcosmic_toplevel_handle_v1;
 use cosmic_protocols::toplevel_management::v1::client::zcosmic_toplevel_manager_v1;
+use cosmic_protocols::workspace::v1::client::zcosmic_workspace_handle_v1;
 use std::error::Error;
 use std::fmt;
 
@@ -10,6 +11,15 @@ use wayland_client::{
 use wayland_protocols::ext::workspace::v1::client::ext_workspace_handle_v1;
 
 mod dispatch;
+
+fn init_tracing() {
+    tracing_subscriber::fmt()
+        .with_env_filter(
+            tracing_subscriber::EnvFilter::try_from_default_env()
+                .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info")),
+        )
+        .init();
+}
 
 const HELP: &str = "\
 Usage: cos-cli [COMMAND]
@@ -116,7 +126,7 @@ struct App {
     title: Option<String>,
     app_id: Option<String>,
     outputs: Vec<wl_output::WlOutput>,
-    // workspaces: Vec<zcosmic_workspace_handle_v1::ZcosmicWorkspaceHandleV1>,
+    workspaces: Vec<zcosmic_workspace_handle_v1::ZcosmicWorkspaceHandleV1>,
     state: Vec<State>,
 }
 
@@ -283,6 +293,7 @@ fn find_apps<T: AppFinderArgs>(
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
+    init_tracing();
     const VERSION: &str = env!("CARGO_PKG_VERSION");
     let mut pargs = pico_args::Arguments::from_env();
     if pargs.contains(["-v", "--version"]) {
