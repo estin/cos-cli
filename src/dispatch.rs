@@ -221,7 +221,7 @@ impl Dispatch<zcosmic_toplevel_info_v1::ZcosmicToplevelInfoV1, ()> for AppState 
                 title: None,
                 app_id: None,
                 outputs: Vec::new(),
-                // workspaces: Vec::new(),
+                workspaces: Vec::new(),
                 state: Vec::new(),
             })
         }
