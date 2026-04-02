@@ -36,10 +36,10 @@ impl Dispatch<wl_registry::WlRegistry, ()> for AppState {
         } = event
         {
             tracing::debug!(
-                "WlRegistry Global {{ name: {}, interface: {}, version: {} }}",
-                name,
-                interface,
-                version
+                name = name,
+                interface = interface,
+                version = version,
+                "WlRegistry Global",
             );
             match interface.as_str() {
                 "wl_seat" => {
