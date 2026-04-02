@@ -8,7 +8,9 @@ use wayland_client::{
     Connection, EventQueue,
     protocol::{wl_output, wl_seat},
 };
-use wayland_protocols::ext::workspace::v1::client::ext_workspace_handle_v1;
+use wayland_protocols::ext::workspace::v1::client::{
+    ext_workspace_group_handle_v1, ext_workspace_handle_v1,
+};
 
 mod dispatch;
 
@@ -112,8 +114,13 @@ impl From<&str> for CliError {
     }
 }
 
+struct WorkspaceGroup {
+    handle: ext_workspace_group_handle_v1::ExtWorkspaceGroupHandleV1,
+    workspaces: Vec<(String, ext_workspace_handle_v1::ExtWorkspaceHandleV1)>,
+}
+
 struct AppState {
-    workspace_group: Vec<Vec<(String, ext_workspace_handle_v1::ExtWorkspaceHandleV1)>>,
+    workspace_groups: Vec<WorkspaceGroup>,
     cosmic_toplevel_manager: Option<zcosmic_toplevel_manager_v1::ZcosmicToplevelManagerV1>,
     outputs: Vec<(wl_output::WlOutput, String)>,
     seats: Vec<(wl_seat::WlSeat, String)>,
@@ -403,7 +410,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let mut state = AppState {
         cosmic_toplevel_manager: None,
-        workspace_group: Vec::new(),
+        workspace_groups: Vec::new(),
         apps: Vec::new(),
         outputs: Vec::new(),
         seats: Vec::new(),
@@ -441,12 +448,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 json.push_str("],");
 
                 json.push_str("\"workspaces\":[");
-                for (i, group) in state.workspace_group.iter().enumerate() {
+                for (i, group) in state.workspace_groups.iter().enumerate() {
                     if i > 0 {
                         json.push(',');
                     }
                     json.push_str(&format!("{{\"index\":{},\"workspaces\":[", i));
-                    for (j, (workspace, _)) in group.iter().enumerate() {
+                    for (j, (workspace, _)) in group.workspaces.iter().enumerate() {
                         if j > 0 {
                             json.push(',');
                         }
@@ -502,9 +509,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     );
                 }
                 println!("Workspaces:");
-                for (i, group) in state.workspace_group.iter().enumerate() {
+                for (i, group) in state.workspace_groups.iter().enumerate() {
                     println!("\t[{i}] Group");
-                    for (workspace, _) in group {
+                    for (workspace, _) in group.workspaces.iter() {
                         println!("\t\tWorkspace: {workspace}");
                     }
                 }
@@ -530,8 +537,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             println!("Connected to cosmic toplevel manager!");
 
             let Some((_, workspace)) = (if let Some(group_index) = args.workspace_group_index {
-                if let Some(group) = state.workspace_group.get(group_index) {
-                    group.iter().find(|(w, _)| w == &args.workspace_name)
+                if let Some(group) = state.workspace_groups.get(group_index) {
+                    group
+                        .workspaces
+                        .iter()
+                        .find(|(w, _)| w == &args.workspace_name)
                 } else {
                     return Err(CliError::new(format!(
                         "Workspace group not found: {}",
@@ -540,9 +550,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 }
             } else {
                 state
-                    .workspace_group
+                    .workspace_groups
                     .iter()
-                    .flat_map(|v| v.iter())
+                    .flat_map(|g| g.workspaces.iter())
                     .find(|(w, _)| w == &args.workspace_name)
             }) else {
                 return Err(CliError::new(format!(
