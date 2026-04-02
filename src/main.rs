@@ -145,8 +145,14 @@ struct JsonApp {
     app_id: String,
     title: String,
     state: Vec<State>,
-    outputs: Vec<String>,
+    outputs: Vec<JsonOutputRef>,
     workspaces: Vec<JsonWorkspaceRef>,
+}
+
+#[derive(Serialize)]
+struct JsonOutputRef {
+    index: usize,
+    name: String,
 }
 
 #[derive(Serialize)]
@@ -480,11 +486,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                                 .outputs
                                 .iter()
                                 .filter_map(|o| {
-                                    state
-                                        .outputs
-                                        .iter()
-                                        .find(|(wo, _)| wo == o)
-                                        .map(|(_, n)| n.clone())
+                                    state.outputs.iter().position(|(wo, _)| wo == o).map(|idx| {
+                                        JsonOutputRef {
+                                            index: idx,
+                                            name: state.outputs[idx].1.clone(),
+                                        }
+                                    })
                                 })
                                 .collect();
                             let workspaces = app
