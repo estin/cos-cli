@@ -6,8 +6,8 @@ use std::error::Error;
 use std::fmt;
 
 use wayland_client::{
-    protocol::{wl_output, wl_seat},
     Connection, EventQueue,
+    protocol::{wl_output, wl_seat},
 };
 use wayland_protocols::ext::workspace::v1::client::{
     ext_workspace_group_handle_v1, ext_workspace_handle_v1,
@@ -146,11 +146,17 @@ struct JsonApp {
     title: String,
     state: Vec<State>,
     outputs: Vec<String>,
-    workspaces: Vec<usize>,
+    workspaces: Vec<JsonWorkspaceRef>,
 }
 
 #[derive(Serialize)]
-struct JsonWorkspace {
+struct JsonWorkspaceRef {
+    group_index: usize,
+    workspace: String,
+}
+
+#[derive(Serialize)]
+struct JsonWorkspaceGroup {
     index: usize,
     workspaces: Vec<String>,
 }
@@ -170,7 +176,7 @@ struct JsonSeat {
 #[derive(Serialize)]
 struct JsonInfo {
     apps: Vec<JsonApp>,
-    workspaces: Vec<JsonWorkspace>,
+    workspace_groups: Vec<JsonWorkspaceGroup>,
     outputs: Vec<JsonOutput>,
     seats: Vec<JsonSeat>,
 }
@@ -481,8 +487,22 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                                         .map(|(_, n)| n.clone())
                                 })
                                 .collect();
-                            let workspaces =
-                                app.workspaces.iter().enumerate().map(|(j, _)| j).collect();
+                            let workspaces = app
+                                .workspaces
+                                .iter()
+                                .filter_map(|w| {
+                                    state.workspace_groups.iter().enumerate().find_map(
+                                        |(gi, group)| {
+                                            group.workspaces.iter().find(|(_, hw)| hw == w).map(
+                                                |(name, _)| JsonWorkspaceRef {
+                                                    group_index: gi,
+                                                    workspace: name.to_owned(),
+                                                },
+                                            )
+                                        },
+                                    )
+                                })
+                                .collect();
                             JsonApp {
                                 index: i,
                                 app_id: app.app_id.clone().unwrap_or_default(),
@@ -493,11 +513,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                             }
                         })
                         .collect(),
-                    workspaces: state
+                    workspace_groups: state
                         .workspace_groups
                         .iter()
                         .enumerate()
-                        .map(|(i, group)| JsonWorkspace {
+                        .map(|(i, group)| JsonWorkspaceGroup {
                             index: i,
                             workspaces: group.workspaces.iter().map(|(n, _)| n.clone()).collect(),
                         })
@@ -550,8 +570,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                             state
                                 .workspace_groups
                                 .iter()
-                                .find_map(|g| g.workspaces.iter().find(|i| &i.1 == w))
-                                .map(|(n, _)| n.as_str())
+                                .enumerate()
+                                .find_map(|(gi, g)| {
+                                    g.workspaces
+                                        .iter()
+                                        .position(|(_, hw)| hw == w)
+                                        .map(|wi| format!("{}.\"{}\"", gi, wi))
+                                })
                         })
                         .collect::<Vec<_>>()
                         .join(", ");
