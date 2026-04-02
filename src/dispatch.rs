@@ -11,8 +11,9 @@ use cosmic_protocols::workspace::v2::client::{
 
 use wayland_client::protocol::wl_seat;
 use wayland_client::{
-    Connection, Dispatch, QueueHandle, event_created_child,
+    event_created_child,
     protocol::{wl_output, wl_registry},
+    Connection, Dispatch, QueueHandle,
 };
 use wayland_protocols::ext::workspace::v1::client::{
     ext_workspace_group_handle_v1, ext_workspace_handle_v1, ext_workspace_manager_v1,
@@ -20,14 +21,80 @@ use wayland_protocols::ext::workspace::v1::client::{
 
 use crate::{App, AppState, State};
 
+pub fn bind(proxy: &wl_registry::WlRegistry, qh: &QueueHandle<AppState>, state: &mut AppState) {
+    if let Some((name, version)) = state.available_interfaces.get("ext_workspace_manager_v1") {
+        proxy.bind::<ext_workspace_manager_v1::ExtWorkspaceManagerV1, _, _>(
+            *name,
+            *version,
+            qh,
+            (),
+        );
+    }
+    if let Some((name, version)) = state
+        .available_interfaces
+        .get("zcosmic_workspace_manager_v1")
+    {
+        proxy.bind::<zcosmic_workspace_manager_v1::ZcosmicWorkspaceManagerV1, _, _>(
+            *name,
+            *version,
+            qh,
+            (),
+        );
+    }
+    if let Some((name, version)) = state
+        .available_interfaces
+        .get("zcosmic_toplevel_manager_v1")
+    {
+        state.cosmic_toplevel_manager = Some(
+            proxy.bind::<zcosmic_toplevel_manager_v1::ZcosmicToplevelManagerV1, _, _>(
+                *name,
+                *version,
+                qh,
+                (),
+            ),
+        );
+    }
+    if let Some((name, version)) = state
+        .available_interfaces
+        .get("zcosmic_workspace_manager_v2")
+    {
+        proxy.bind::<zcosmic_workspace_manager_v2::ZcosmicWorkspaceManagerV2, _, _>(
+            *name,
+            *version,
+            qh,
+            (),
+        );
+    }
+    if let Some((name, version)) = state
+        .available_interfaces
+        .get("zcosmic_workspace_handle_v2")
+    {
+        proxy.bind::<zcosmic_workspace_handle_v2::ZcosmicWorkspaceHandleV2, _, _>(
+            *name,
+            *version,
+            qh,
+            (),
+        );
+    }
+    if let Some((name, version)) = state.available_interfaces.get("wl_output") {
+        proxy.bind::<wl_output::WlOutput, _, _>(*name, *version, qh, ());
+    }
+    if let Some((name, version)) = state.available_interfaces.get("wl_seat") {
+        proxy.bind::<wl_seat::WlSeat, _, _>(*name, *version, qh, ());
+    }
+    if let Some((name, _version)) = state.available_interfaces.get("zcosmic_toplevel_info_v1") {
+        proxy.bind::<zcosmic_toplevel_info_v1::ZcosmicToplevelInfoV1, _, _>(*name, 1, qh, ());
+    }
+}
+
 impl Dispatch<wl_registry::WlRegistry, ()> for AppState {
     fn event(
         state: &mut Self,
-        proxy: &wl_registry::WlRegistry,
+        _proxy: &wl_registry::WlRegistry,
         event: wl_registry::Event,
         _data: &(),
         _conn: &Connection,
-        qh: &QueueHandle<Self>,
+        _qh: &QueueHandle<Self>,
     ) {
         if let wl_registry::Event::Global {
             name,
@@ -41,65 +108,9 @@ impl Dispatch<wl_registry::WlRegistry, ()> for AppState {
                 version = version,
                 "WlRegistry Global",
             );
-            match interface.as_str() {
-                "wl_seat" => {
-                    proxy.bind::<wl_seat::WlSeat, _, _>(name, 4, qh, ());
-                }
-                "wl_output" => {
-                    proxy.bind::<wl_output::WlOutput, _, _>(name, 4, qh, ());
-                }
-                "zcosmic_toplevel_info_v1" => {
-                    proxy.bind::<zcosmic_toplevel_info_v1::ZcosmicToplevelInfoV1, _, _>(
-                        name,
-                        1,
-                        qh,
-                        (),
-                    );
-                }
-                "ext_workspace_manager_v1" => {
-                    proxy.bind::<ext_workspace_manager_v1::ExtWorkspaceManagerV1, _, _>(
-                        name,
-                        version,
-                        qh,
-                        (),
-                    );
-                }
-                "zcosmic_toplevel_manager_v1" => {
-                    state.cosmic_toplevel_manager = Some(
-                        proxy.bind::<zcosmic_toplevel_manager_v1::ZcosmicToplevelManagerV1, _, _>(
-                            name,
-                            version,
-                            qh,
-                            (),
-                        ),
-                    );
-                }
-                "zcosmic_workspace_manager_v1" => {
-                    proxy.bind::<zcosmic_workspace_manager_v1::ZcosmicWorkspaceManagerV1, _, _>(
-                        name,
-                        version,
-                        qh,
-                        (),
-                    );
-                }
-                "zcosmic_workspace_manager_v2" => {
-                    proxy.bind::<zcosmic_workspace_manager_v2::ZcosmicWorkspaceManagerV2, _, _>(
-                        name,
-                        version,
-                        qh,
-                        (),
-                    );
-                }
-                "zcosmic_workspace_handle_v2" => {
-                    proxy.bind::<zcosmic_workspace_handle_v2::ZcosmicWorkspaceHandleV2, _, _>(
-                        name,
-                        version,
-                        qh,
-                        (),
-                    );
-                }
-                _ => {}
-            }
+            state
+                .available_interfaces
+                .insert(interface.clone(), (name, version));
         }
     }
 }
@@ -146,14 +157,11 @@ impl Dispatch<ext_workspace_manager_v1::ExtWorkspaceManagerV1, ()> for AppState 
         _qh: &QueueHandle<Self>,
     ) {
         tracing::debug!(event = ?event, proxy = ?proxy, "ExtWorkspaceManagerV1");
-        match event {
-            ext_workspace_manager_v1::Event::WorkspaceGroup { workspace_group } => {
-                state.workspace_groups.push(crate::WorkspaceGroup {
-                    handle: workspace_group,
-                    workspaces: Vec::new(),
-                })
-            }
-            _ => {}
+        if let ext_workspace_manager_v1::Event::WorkspaceGroup { workspace_group } = event {
+            state.workspace_groups.push(crate::WorkspaceGroup {
+                handle: workspace_group,
+                workspaces: Vec::new(),
+            })
         }
     }
 
@@ -287,16 +295,26 @@ impl Dispatch<zcosmic_toplevel_handle_v1::ZcosmicToplevelHandleV1, ()> for AppSt
                     info.outputs.retain(|o| o != &output);
                 }
             }
-            zcosmic_toplevel_handle_v1::Event::WorkspaceEnter { workspace } => {
+            zcosmic_toplevel_handle_v1::Event::ExtWorkspaceEnter { workspace } => {
                 if let Some(info) = app_data.apps.iter_mut().find(|t| &t.handle == toplevel) {
                     info.workspaces.push(workspace);
                 }
             }
-            zcosmic_toplevel_handle_v1::Event::WorkspaceLeave { workspace } => {
+            zcosmic_toplevel_handle_v1::Event::ExtWorkspaceLeave { workspace } => {
                 if let Some(info) = app_data.apps.iter_mut().find(|t| &t.handle == toplevel) {
                     info.workspaces.retain(|w| w != &workspace);
                 }
             }
+            // zcosmic_toplevel_handle_v1::Event::WorkspaceEnter { workspace } => {
+            //     if let Some(info) = app_data.apps.iter_mut().find(|t| &t.handle == toplevel) {
+            //         info.workspaces.push(workspace);
+            //     }
+            // }
+            // zcosmic_toplevel_handle_v1::Event::WorkspaceLeave { workspace } => {
+            //     if let Some(info) = app_data.apps.iter_mut().find(|t| &t.handle == toplevel) {
+            //         info.workspaces.retain(|w| w != &workspace);
+            //     }
+            // }
             zcosmic_toplevel_handle_v1::Event::State { state } => {
                 if let Some(info) = app_data.apps.iter_mut().find(|t| &t.handle == toplevel) {
                     info.state = state

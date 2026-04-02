@@ -1,12 +1,13 @@
 use cosmic_protocols::toplevel_info::v1::client::zcosmic_toplevel_handle_v1;
 use cosmic_protocols::toplevel_management::v1::client::zcosmic_toplevel_manager_v1;
-use cosmic_protocols::workspace::v1::client::zcosmic_workspace_handle_v1;
+use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use std::error::Error;
 use std::fmt;
 
 use wayland_client::{
-    Connection, EventQueue,
     protocol::{wl_output, wl_seat},
+    Connection, EventQueue,
 };
 use wayland_protocols::ext::workspace::v1::client::{
     ext_workspace_group_handle_v1, ext_workspace_handle_v1,
@@ -120,6 +121,7 @@ struct WorkspaceGroup {
 }
 
 struct AppState {
+    available_interfaces: HashMap<String, (u32, u32)>,
     workspace_groups: Vec<WorkspaceGroup>,
     cosmic_toplevel_manager: Option<zcosmic_toplevel_manager_v1::ZcosmicToplevelManagerV1>,
     outputs: Vec<(wl_output::WlOutput, String)>,
@@ -133,11 +135,48 @@ struct App {
     title: Option<String>,
     app_id: Option<String>,
     outputs: Vec<wl_output::WlOutput>,
-    workspaces: Vec<zcosmic_workspace_handle_v1::ZcosmicWorkspaceHandleV1>,
+    workspaces: Vec<ext_workspace_handle_v1::ExtWorkspaceHandleV1>,
     state: Vec<State>,
 }
 
-#[derive(Debug, PartialEq, Clone)]
+#[derive(Serialize)]
+struct JsonApp {
+    index: usize,
+    app_id: String,
+    title: String,
+    state: Vec<State>,
+    outputs: Vec<String>,
+    workspaces: Vec<usize>,
+}
+
+#[derive(Serialize)]
+struct JsonWorkspace {
+    index: usize,
+    workspaces: Vec<String>,
+}
+
+#[derive(Serialize)]
+struct JsonOutput {
+    index: usize,
+    name: String,
+}
+
+#[derive(Serialize)]
+struct JsonSeat {
+    index: usize,
+    name: String,
+}
+
+#[derive(Serialize)]
+struct JsonInfo {
+    apps: Vec<JsonApp>,
+    workspaces: Vec<JsonWorkspace>,
+    outputs: Vec<JsonOutput>,
+    seats: Vec<JsonSeat>,
+}
+
+#[derive(Debug, PartialEq, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
 pub enum State {
     Maximized = 0,
     Minimized = 1,
@@ -409,88 +448,80 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let qh = event_queue.handle();
 
     let mut state = AppState {
+        available_interfaces: Default::default(),
         cosmic_toplevel_manager: None,
-        workspace_groups: Vec::new(),
-        apps: Vec::new(),
-        outputs: Vec::new(),
-        seats: Vec::new(),
+        workspace_groups: Default::default(),
+        apps: Default::default(),
+        outputs: Default::default(),
+        seats: Default::default(),
     };
-    let _registry = conn.display().get_registry(&qh, ());
+    let registry = conn.display().get_registry(&qh, ());
 
     event_queue.roundtrip(&mut state)?;
+    dispatch::bind(&registry, &qh, &mut state);
     event_queue.roundtrip(&mut state)?;
 
     match command {
         Command::Info(args) => {
             if args.json {
-                let mut json = String::new();
-                json.push('{');
-
-                json.push_str("\"apps\":[");
-                for (i, app) in state.apps.iter().enumerate() {
-                    if i > 0 {
-                        json.push(',');
-                    }
-                    let states = app
-                        .state
+                let json_info = JsonInfo {
+                    apps: state
+                        .apps
                         .iter()
-                        .map(|s| format!("\"{}\"", s))
-                        .collect::<Vec<_>>()
-                        .join(",");
-                    json.push_str(&format!(
-                        "{{\"index\":{},\"app_id\":\"{}\",\"title\":\"{}\",\"state\":[{}]}}",
-                        i,
-                        json_escape(app.app_id.as_deref().unwrap_or_default()),
-                        json_escape(app.title.as_deref().unwrap_or_default()),
-                        states
-                    ));
-                }
-                json.push_str("],");
-
-                json.push_str("\"workspaces\":[");
-                for (i, group) in state.workspace_groups.iter().enumerate() {
-                    if i > 0 {
-                        json.push(',');
-                    }
-                    json.push_str(&format!("{{\"index\":{},\"workspaces\":[", i));
-                    for (j, (workspace, _)) in group.workspaces.iter().enumerate() {
-                        if j > 0 {
-                            json.push(',');
-                        }
-                        json.push_str(&format!("{{\"name\":\"{}\"}}", json_escape(workspace)));
-                    }
-                    json.push_str("]}");
-                }
-                json.push_str("],");
-
-                json.push_str("\"outputs\":[");
-                for (i, (_, name)) in state.outputs.iter().enumerate() {
-                    if i > 0 {
-                        json.push(',');
-                    }
-                    json.push_str(&format!(
-                        "{{\"index\":{},\"name\":\"{}\"}}",
-                        i,
-                        json_escape(name)
-                    ));
-                }
-                json.push_str("],");
-
-                json.push_str("\"seats\":[");
-                for (i, (_, name)) in state.seats.iter().enumerate() {
-                    if i > 0 {
-                        json.push(',');
-                    }
-                    json.push_str(&format!(
-                        "{{\"index\":{},\"name\":\"{}\"}}",
-                        i,
-                        json_escape(name)
-                    ));
-                }
-                json.push(']');
-
-                json.push('}');
-                println!("{}", json);
+                        .enumerate()
+                        .map(|(i, app)| {
+                            let outputs = app
+                                .outputs
+                                .iter()
+                                .filter_map(|o| {
+                                    state
+                                        .outputs
+                                        .iter()
+                                        .find(|(wo, _)| wo == o)
+                                        .map(|(_, n)| n.clone())
+                                })
+                                .collect();
+                            let workspaces =
+                                app.workspaces.iter().enumerate().map(|(j, _)| j).collect();
+                            JsonApp {
+                                index: i,
+                                app_id: app.app_id.clone().unwrap_or_default(),
+                                title: app.title.clone().unwrap_or_default(),
+                                state: app.state.clone(),
+                                outputs,
+                                workspaces,
+                            }
+                        })
+                        .collect(),
+                    workspaces: state
+                        .workspace_groups
+                        .iter()
+                        .enumerate()
+                        .map(|(i, group)| JsonWorkspace {
+                            index: i,
+                            workspaces: group.workspaces.iter().map(|(n, _)| n.clone()).collect(),
+                        })
+                        .collect(),
+                    outputs: state
+                        .outputs
+                        .iter()
+                        .enumerate()
+                        .map(|(i, (_, name))| JsonOutput {
+                            index: i,
+                            name: name.clone(),
+                        })
+                        .collect(),
+                    seats: state
+                        .seats
+                        .iter()
+                        .enumerate()
+                        .map(|(i, (_, name))| JsonSeat {
+                            index: i,
+                            name: name.clone(),
+                        })
+                        .collect(),
+                };
+                println!("{}", serde_json::to_string(&json_info).unwrap());
             } else {
                 println!("Apps:");
                 for (i, app) in state.apps.iter().enumerate() {
@@ -500,12 +531,38 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         .map(|s| s.to_string())
                         .collect::<Vec<_>>()
                         .join(", ");
+                    let output_names = app
+                        .outputs
+                        .iter()
+                        .filter_map(|o| {
+                            state
+                                .outputs
+                                .iter()
+                                .find(|(wo, _)| wo == o)
+                                .map(|(_, n)| n.as_str())
+                        })
+                        .collect::<Vec<_>>()
+                        .join(", ");
+                    let workspaces = app
+                        .workspaces
+                        .iter()
+                        .filter_map(|w| {
+                            state
+                                .workspace_groups
+                                .iter()
+                                .find_map(|g| g.workspaces.iter().find(|i| &i.1 == w))
+                                .map(|(n, _)| n.as_str())
+                        })
+                        .collect::<Vec<_>>()
+                        .join(", ");
                     println!(
-                        "\t[{}] {} (title: {}, state: [{}])",
+                        "\t[{}] {} (title: {}, state: [{}],  workspaces: [{}], outputs: [{}])",
                         i,
                         app.app_id.as_deref().unwrap_or_default(),
                         app.title.as_deref().unwrap_or_default(),
-                        states
+                        states,
+                        workspaces,
+                        output_names,
                     );
                 }
                 println!("Workspaces:");
@@ -652,8 +709,4 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     };
 
     Ok(())
-}
-
-fn json_escape(s: &str) -> String {
-    s.replace('\\', "\\\\").replace('"', "\\\"")
 }

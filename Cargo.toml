@@ -10,3 +10,5 @@ cosmic-protocols = { git = "https://github.com/pop-os/cosmic-protocols", feature
 pico-args = "0.5"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
