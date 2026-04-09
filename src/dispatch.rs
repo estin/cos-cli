@@ -11,9 +11,8 @@ use cosmic_protocols::workspace::v2::client::{
 
 use wayland_client::protocol::wl_seat;
 use wayland_client::{
-    event_created_child,
+    Connection, Dispatch, QueueHandle, event_created_child,
     protocol::{wl_output, wl_registry},
-    Connection, Dispatch, QueueHandle,
 };
 use wayland_protocols::ext::workspace::v1::client::{
     ext_workspace_group_handle_v1, ext_workspace_handle_v1, ext_workspace_manager_v1,
@@ -125,8 +124,14 @@ impl Dispatch<wl_output::WlOutput, ()> for AppState {
         _: &QueueHandle<AppState>,
     ) {
         tracing::debug!(event = ?event, output = ?output, "WlOutput");
-        if let wl_output::Event::Name { name } = event {
-            app_data.outputs.push((output.clone(), name));
+        match event {
+            wl_output::Event::Name { name } => {
+                app_data.outputs.push((output.clone(), name));
+            }
+            wl_output::Event::Done => {
+                app_data.discover_done = true;
+            }
+            _ => {}
         }
     }
 }
@@ -174,6 +179,34 @@ impl Dispatch<ext_workspace_manager_v1::ExtWorkspaceManagerV1, ()> for AppState 
         ]
     );
 }
+
+// impl Dispatch<zcosmic_workspace_manager_v1::ZcosmicWorkspaceManagerV1, ()> for AppState {
+//     fn event(
+//         state: &mut Self,
+//         proxy: &zcosmic_workspace_manager_v1::ZcosmicWorkspaceManagerV1,
+//         event: zcosmic_workspace_manager_v1::Event,
+//         _data: &(),
+//         _conn: &Connection,
+//         _qh: &QueueHandle<Self>,
+//     ) {
+//         tracing::debug!(event = ?event, proxy = ?proxy, "ZcosmicWorkspaceManagerV1");
+//         // if let zcosmic_workspace_manager_v1::Event::WorkspaceGroup { workspace_group } = event {
+//         //     state.cosmic_workspace_groups.push(CosmicWorkspaceGroup {
+//         //         handle: workspace_group,
+//         //         workspaces: Vec::new(),
+//         //         outputs: Vec::new(),
+//         //     })
+//         // }
+//     }
+
+//     event_created_child!(
+//         AppState,
+//         zcosmic_workspace_manager_v1::ZcosmicWorkspaceManagerV1,
+//         [
+//             zcosmic_workspace_manager_v1::EVT_WORKSPACE_GROUP_OPCODE => (zcosmic_workspace_group_handle_v1::ZcosmicWorkspaceGroupHandleV1, ()),
+//         ]
+//     );
+// }
 
 impl Dispatch<ext_workspace_handle_v1::ExtWorkspaceHandleV1, ()> for AppState {
     fn event(

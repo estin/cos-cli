@@ -21,6 +21,7 @@ fn init_tracing() {
             tracing_subscriber::EnvFilter::try_from_default_env()
                 .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info")),
         )
+        .with_ansi(std::env::var_os("NO_COLOR").is_none())
         .init();
 }
 
@@ -62,6 +63,7 @@ Options for 'state':
 
 Options for 'info':
   --json                        Output in JSON format
+  --wg-on-output                Try to find info relation about workspace group and output
 
 Examples:
   cos-cli info
@@ -120,6 +122,7 @@ struct WorkspaceGroup {
     workspaces: Vec<(String, ext_workspace_handle_v1::ExtWorkspaceHandleV1)>,
 }
 
+#[derive(Default)]
 struct AppState {
     available_interfaces: HashMap<String, (u32, u32)>,
     workspace_groups: Vec<WorkspaceGroup>,
@@ -127,6 +130,13 @@ struct AppState {
     outputs: Vec<(wl_output::WlOutput, String)>,
     seats: Vec<(wl_seat::WlSeat, String)>,
     apps: Vec<App>,
+    discover_done: bool,
+}
+
+impl AppState {
+    fn new() -> Self {
+        Self::default()
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -289,6 +299,7 @@ impl AppFinderArgs for StateArgs {
 #[derive(Debug)]
 struct InfoArgs {
     json: bool,
+    wg_on_output: bool,
 }
 
 enum Command {
@@ -364,6 +375,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let command = match subcommand.as_deref() {
         Some("info") => Command::Info(InfoArgs {
             json: pargs.contains("--json"),
+            wg_on_output: pargs.contains("--wg-on-outputs"),
         }),
         Some("move") => {
             let app_id: Option<String> = pargs.opt_value_from_str(["-a", "--app-id"])?;
@@ -459,22 +471,26 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut event_queue = conn.new_event_queue();
     let qh = event_queue.handle();
 
-    let mut state = AppState {
-        available_interfaces: Default::default(),
-        cosmic_toplevel_manager: None,
-        workspace_groups: Default::default(),
-        apps: Default::default(),
-        outputs: Default::default(),
-        seats: Default::default(),
-    };
+    let mut state = AppState::new();
     let registry = conn.display().get_registry(&qh, ());
 
     event_queue.roundtrip(&mut state)?;
     dispatch::bind(&registry, &qh, &mut state);
-    event_queue.roundtrip(&mut state)?;
+    for _ in 0..10 {
+        event_queue.roundtrip(&mut state)?;
+        if state.discover_done {
+            break;
+        }
+    }
 
     match command {
         Command::Info(args) => {
+            // Try to move toplevel from one workspace group to another and find associated output by app.outputs
+            if args.wg_on_output {
+                // TODO get last app and move it to first workspace in another workgroup, for each workgroup
+                // TODO move app back to the initial workspace
+            }
+
             if args.json {
                 let json_info = JsonInfo {
                     apps: state
