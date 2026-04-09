@@ -166,6 +166,8 @@ impl Dispatch<ext_workspace_manager_v1::ExtWorkspaceManagerV1, ()> for AppState 
             state.workspace_groups.push(crate::WorkspaceGroup {
                 handle: workspace_group,
                 workspaces: Vec::new(),
+                // to discover later by moving app and listen zcosmic_toplevel_handle_v1::Event::OutputEnter|OutputLeave
+                outputs: Vec::new(),
             })
         }
     }

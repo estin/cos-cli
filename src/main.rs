@@ -120,6 +120,7 @@ impl From<&str> for CliError {
 struct WorkspaceGroup {
     handle: ext_workspace_group_handle_v1::ExtWorkspaceGroupHandleV1,
     workspaces: Vec<(String, ext_workspace_handle_v1::ExtWorkspaceHandleV1)>,
+    outputs: Vec<(wl_output::WlOutput, String)>,
 }
 
 #[derive(Default)]
@@ -175,6 +176,7 @@ struct JsonWorkspaceRef {
 struct JsonWorkspaceGroup {
     index: usize,
     workspaces: Vec<String>,
+    outputs: Vec<String>,
 }
 
 #[derive(Serialize)]
@@ -375,7 +377,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let command = match subcommand.as_deref() {
         Some("info") => Command::Info(InfoArgs {
             json: pargs.contains("--json"),
-            wg_on_output: pargs.contains("--wg-on-outputs"),
+            wg_on_output: pargs.contains("--wg-on-output"),
         }),
         Some("move") => {
             let app_id: Option<String> = pargs.opt_value_from_str(["-a", "--app-id"])?;
@@ -487,8 +489,191 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         Command::Info(args) => {
             // Try to move toplevel from one workspace group to another and find associated output by app.outputs
             if args.wg_on_output {
-                // TODO get last app and move it to first workspace in another workgroup, for each workgroup
-                // TODO move app back to the initial workspace
+                if state.apps.is_empty() {
+                    return Err(CliError::new(
+                        "No apps available to test workspace group movement.".into(),
+                    ));
+                }
+                if state.workspace_groups.len() < 2 {
+                    return Err(CliError::new(
+                        "Need at least 2 workspace groups to test wg-on-output.".into(),
+                    ));
+                }
+
+                let manager = state
+                    .cosmic_toplevel_manager
+                    .as_ref()
+                    .ok_or_else(|| {
+                        CliError::new(
+                            "Compositor does not support workspace management protocol.".into(),
+                        )
+                    })?
+                    .clone();
+
+                // Get the last app
+                let last_app = state
+                    .apps
+                    .last()
+                    .ok_or_else(|| CliError::new("No apps found.".into()))?
+                    .clone();
+                let initial_workspaces = last_app.workspaces.clone();
+                let initial_outputs = last_app.outputs.clone();
+
+                // Find initial workspace group and the specific initial workspace handle
+                let (initial_group_index, initial_workspace_handle) = initial_workspaces
+                    .first()
+                    .and_then(|w| {
+                        state
+                            .workspace_groups
+                            .iter()
+                            .position(|g| g.workspaces.iter().any(|(_, hw)| hw == w))
+                            .map(|gi| (gi, w.clone()))
+                    })
+                    .ok_or_else(|| {
+                        CliError::new("Could not determine initial workspace for app.".into())
+                    })?;
+
+                tracing::debug!(
+                    "Testing workspace group movement with app: {}",
+                    last_app.app_id.as_deref().unwrap_or("unknown")
+                );
+
+                // Get target workspace groups (excluding the initial one)
+                let target_group_indices: Vec<usize> = state
+                    .workspace_groups
+                    .iter()
+                    .enumerate()
+                    .filter(|(i, _)| Some(*i) != Some(initial_group_index))
+                    .map(|(i, _)| i)
+                    .collect();
+
+                for &target_gi in &target_group_indices {
+                    let target_group = &state.workspace_groups[target_gi];
+                    if target_group.workspaces.is_empty() {
+                        tracing::debug!("Skipping workspace group {target_gi} (no workspaces)");
+                        continue;
+                    }
+
+                    let (target_workspace_name, target_workspace_handle) =
+                        &target_group.workspaces[0];
+                    let output = if !initial_outputs.is_empty() {
+                        initial_outputs[0].clone()
+                    } else if !state.outputs.is_empty() {
+                        state.outputs[0].0.clone()
+                    } else {
+                        return Err(CliError::new("No outputs available.".into()));
+                    };
+
+                    tracing::debug!(
+                        "Moving app to workspace group {target_gi}, workspace '{target_workspace_name}'",
+                    );
+                    manager.move_to_ext_workspace(
+                        &last_app.handle,
+                        target_workspace_handle,
+                        &output,
+                    );
+                    conn.flush()?;
+
+                    // Wait a bit for the change to propagate
+                    std::thread::sleep(std::time::Duration::from_millis(300));
+                    event_queue.roundtrip(&mut state)?;
+
+                    // Discover outputs for this workspace group by checking the app's outputs
+                    if let Some(group) = state.workspace_groups.get_mut(target_gi) {
+                        group.outputs.clear();
+                        for output_handle in &last_app.outputs {
+                            if let Some((_, output_name)) =
+                                state.outputs.iter().find(|(wo, _)| wo == output_handle)
+                            {
+                                group
+                                    .outputs
+                                    .push((output_handle.clone(), output_name.clone()));
+                                tracing::debug!(
+                                    "Discovered output '{output_name}' for workspace group {target_gi}",
+                                );
+                            }
+                        }
+                    }
+
+                    // Print output information
+                    if !last_app.outputs.is_empty() {
+                        for output_handle in &last_app.outputs {
+                            if let Some((_, output_name)) =
+                                state.outputs.iter().find(|(wo, _)| wo == output_handle)
+                            {
+                                tracing::debug!("App is now on output: {output_name}");
+                            }
+                        }
+                    } else {
+                        tracing::debug!("App outputs: none");
+                    }
+
+                    if !last_app.workspaces.is_empty() {
+                        for ws_handle in &last_app.workspaces {
+                            for (gi, group) in state.workspace_groups.iter().enumerate() {
+                                if let Some((ws_name, _)) =
+                                    group.workspaces.iter().find(|(_, hw)| hw == ws_handle)
+                                {
+                                    tracing::debug!(
+                                        "App is now in workspace group {gi}, workspace '{ws_name}'",
+                                    );
+                                }
+                            }
+                        }
+                    } else {
+                        tracing::debug!("App workspaces: none");
+                    }
+                }
+
+                // Move app back to the exact initial workspace
+                let output = if !last_app.outputs.is_empty() {
+                    last_app.outputs[0].clone()
+                } else if !state.outputs.is_empty() {
+                    state.outputs[0].0.clone()
+                } else {
+                    return Err(CliError::new("No outputs available.".into()));
+                };
+
+                if let Some((initial_ws_name, _)) = state
+                    .workspace_groups
+                    .get(initial_group_index)
+                    .and_then(|g| {
+                        g.workspaces
+                            .iter()
+                            .find(|(_, hw)| *hw == initial_workspace_handle)
+                    })
+                {
+                    tracing::debug!(
+                        "Moving app back to initial workspace group {initial_group_index}, workspace '{initial_ws_name}'",
+                    );
+                    manager.move_to_ext_workspace(
+                        &last_app.handle,
+                        &initial_workspace_handle,
+                        &output,
+                    );
+                    conn.flush()?;
+
+                    // Wait a bit for the change to propagate
+                    std::thread::sleep(std::time::Duration::from_millis(300));
+                    event_queue.roundtrip(&mut state)?;
+
+                    // Discover outputs for the initial workspace group
+                    if let Some(group) = state.workspace_groups.get_mut(initial_group_index) {
+                        group.outputs.clear();
+                        for output_handle in &last_app.outputs {
+                            if let Some((_, output_name)) =
+                                state.outputs.iter().find(|(wo, _)| wo == output_handle)
+                            {
+                                group
+                                    .outputs
+                                    .push((output_handle.clone(), output_name.clone()));
+                                tracing::debug!(
+                                    "Discovered output '{output_name}' for initial workspace group {initial_group_index}",
+                                );
+                            }
+                        }
+                    }
+                }
             }
 
             if args.json {
@@ -543,6 +728,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         .map(|(i, group)| JsonWorkspaceGroup {
                             index: i,
                             workspaces: group.workspaces.iter().map(|(n, _)| n.clone()).collect(),
+                            outputs: group.outputs.iter().map(|(_, n)| n.clone()).collect(),
                         })
                         .collect(),
                     outputs: state
@@ -615,7 +801,17 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 }
                 println!("Workspaces:");
                 for (i, group) in state.workspace_groups.iter().enumerate() {
-                    println!("\t[{i}] Group");
+                    let output_names = group
+                        .outputs
+                        .iter()
+                        .map(|(_, n)| n.as_str())
+                        .collect::<Vec<_>>()
+                        .join(", ");
+                    if output_names.is_empty() {
+                        println!("\t[{i}] Group (outputs: undiscovered)");
+                    } else {
+                        println!("\t[{i}] Group (outputs: {output_names})");
+                    }
                     for (workspace, _) in group.workspaces.iter() {
                         println!("\t\tWorkspace: {workspace}");
                     }
