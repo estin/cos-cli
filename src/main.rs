@@ -480,6 +480,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     dispatch::bind(&registry, &qh, &mut state);
     for _ in 0..10 {
         event_queue.roundtrip(&mut state)?;
+        std::thread::sleep(std::time::Duration::from_millis(100));
         if state.discover_done {
             break;
         }
