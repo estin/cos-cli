@@ -7,10 +7,12 @@ use std::fmt;
 
 use wayland_client::{
     Connection, EventQueue,
+    backend::ObjectId,
     protocol::{wl_output, wl_seat},
 };
 use wayland_protocols::ext::workspace::v1::client::{
-    ext_workspace_group_handle_v1, ext_workspace_handle_v1,
+    // ext_workspace_group_handle_v1,
+    ext_workspace_handle_v1,
 };
 
 mod dispatch;
@@ -117,19 +119,57 @@ impl From<&str> for CliError {
     }
 }
 
+#[derive(Clone)]
+struct NamedHandle<T> {
+    name: Option<String>,
+    handle: T,
+}
+
+impl<T: Clone> NamedHandle<T> {
+    // fn new(handle: T) -> Self {
+    //     Self { name: None, handle }
+    // }
+    fn named(name: &str, handle: T) -> Self {
+        Self {
+            name: name.to_string().into(),
+            handle,
+        }
+    }
+}
+
+#[derive(Default)]
+struct HandleMap {
+    // workspace_group_handle:
+    //     HashMap<ObjectId, NamedHandle<ext_workspace_group_handle_v1::ExtWorkspaceGroupHandleV1>>,
+    workspace_handle: HashMap<ObjectId, NamedHandle<ext_workspace_handle_v1::ExtWorkspaceHandleV1>>,
+    output: HashMap<ObjectId, NamedHandle<wl_output::WlOutput>>,
+    seat: HashMap<ObjectId, NamedHandle<wl_seat::WlSeat>>,
+}
+
 struct WorkspaceGroup {
-    handle: ext_workspace_group_handle_v1::ExtWorkspaceGroupHandleV1,
-    workspaces: Vec<(String, ext_workspace_handle_v1::ExtWorkspaceHandleV1)>,
-    outputs: Vec<(wl_output::WlOutput, String)>,
+    object_id: ObjectId,
+    workspaces: Vec<ObjectId>,
+    outputs: Vec<ObjectId>,
+}
+
+impl HandleMap {
+    fn workspace_names(&self, group: &WorkspaceGroup) -> impl Iterator<Item = &str> {
+        group
+            .workspaces
+            .iter()
+            .filter_map(|w| self.workspace_handle.get(w))
+            .filter_map(|nh| nh.name.as_deref())
+    }
 }
 
 #[derive(Default)]
 struct AppState {
+    handle_map: HandleMap,
+    cosmic_toplevel_manager: Option<zcosmic_toplevel_manager_v1::ZcosmicToplevelManagerV1>,
     available_interfaces: HashMap<String, (u32, u32)>,
     workspace_groups: Vec<WorkspaceGroup>,
-    cosmic_toplevel_manager: Option<zcosmic_toplevel_manager_v1::ZcosmicToplevelManagerV1>,
-    outputs: Vec<(wl_output::WlOutput, String)>,
-    seats: Vec<(wl_seat::WlSeat, String)>,
+    outputs: Vec<ObjectId>,
+    seats: Vec<ObjectId>,
     apps: Vec<App>,
     discover_done: bool,
 }
@@ -145,8 +185,8 @@ struct App {
     handle: zcosmic_toplevel_handle_v1::ZcosmicToplevelHandleV1,
     title: Option<String>,
     app_id: Option<String>,
-    outputs: Vec<wl_output::WlOutput>,
-    workspaces: Vec<ext_workspace_handle_v1::ExtWorkspaceHandleV1>,
+    outputs: Vec<ObjectId>,
+    workspaces: Vec<ObjectId>,
     state: Vec<State>,
 }
 
@@ -169,6 +209,7 @@ struct JsonOutputRef {
 #[derive(Serialize)]
 struct JsonWorkspaceRef {
     group_index: usize,
+    index: usize,
     workspace: String,
 }
 
@@ -488,192 +529,141 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     match command {
         Command::Info(args) => {
-            // Try to move toplevel from one workspace group to another and find associated output by app.outputs
+            for app in &state.apps {
+                state
+                    .workspace_groups
+                    .iter_mut()
+                    .filter(|wg| wg.workspaces.iter().any(|w| app.workspaces.contains(w)))
+                    .for_each(|wg| {
+                        for output in &app.outputs {
+                            if !wg.outputs.contains(output) {
+                                wg.outputs.push(output.clone());
+                            }
+                        }
+                    });
+            }
+
             if args.wg_on_output {
-                if state.apps.is_empty() {
+                let Some(manager) = state.cosmic_toplevel_manager.clone() else {
                     return Err(CliError::new(
-                        "No apps available to test workspace group movement.".into(),
+                        "Compositor does not support workspace management protocol.".into(),
                     ));
-                }
-                if state.workspace_groups.len() < 2 {
+                };
+                let Some(last_app) = state.apps.last().cloned() else {
                     return Err(CliError::new(
-                        "Need at least 2 workspace groups to test wg-on-output.".into(),
+                        "No apps found to discover workspace group outputs".into(),
                     ));
-                }
+                };
 
-                let manager = state
-                    .cosmic_toplevel_manager
-                    .as_ref()
-                    .ok_or_else(|| {
-                        CliError::new(
-                            "Compositor does not support workspace management protocol.".into(),
-                        )
-                    })?
-                    .clone();
+                let Some(initial_app_output) = last_app.outputs.first() else {
+                    return Err(CliError::new("App without output".into()));
+                };
 
-                // Get the last app
-                let last_app = state
-                    .apps
-                    .last()
-                    .ok_or_else(|| CliError::new("No apps found.".into()))?
-                    .clone();
-                let initial_workspaces = last_app.workspaces.clone();
-                let initial_outputs = last_app.outputs.clone();
+                let Some(initial_app_workspace) = last_app.workspaces.first() else {
+                    return Err(CliError::new("App without workspace".into()));
+                };
 
-                // Find initial workspace group and the specific initial workspace handle
-                let (initial_group_index, initial_workspace_handle) = initial_workspaces
-                    .first()
-                    .and_then(|w| {
-                        state
-                            .workspace_groups
-                            .iter()
-                            .position(|g| g.workspaces.iter().any(|(_, hw)| hw == w))
-                            .map(|gi| (gi, w.clone()))
-                    })
-                    .ok_or_else(|| {
-                        CliError::new("Could not determine initial workspace for app.".into())
-                    })?;
+                let Some(initial_app_group) = state
+                    .workspace_groups
+                    .iter()
+                    .find(|wg| wg.workspaces.contains(initial_app_workspace))
+                    .map(|wg| wg.object_id.to_owned())
+                else {
+                    return Err(CliError::new("Workspace without group.".into()));
+                };
 
-                tracing::debug!(
-                    "Testing workspace group movement with app: {}",
-                    last_app.app_id.as_deref().unwrap_or("unknown")
-                );
-
-                // Get target workspace groups (excluding the initial one)
-                let target_group_indices: Vec<usize> = state
+                let move_plan = state
                     .workspace_groups
                     .iter()
                     .enumerate()
-                    .filter(|(i, _)| Some(*i) != Some(initial_group_index))
-                    .map(|(i, _)| i)
-                    .collect();
+                    .filter_map(|(index, g)| {
+                        if g.object_id != initial_app_group {
+                            Some((index, g.object_id.clone(), g.workspaces.first()?.clone()))
+                        } else {
+                            None
+                        }
+                    })
+                    .collect::<Vec<_>>();
 
-                for &target_gi in &target_group_indices {
-                    let target_group = &state.workspace_groups[target_gi];
-                    if target_group.workspaces.is_empty() {
-                        tracing::debug!("Skipping workspace group {target_gi} (no workspaces)");
+                // start move app from one workspace group to another
+                let mut was_moved = false;
+                for (group_index, group_id, workspace_id) in move_plan {
+                    let Some(nh) = state
+                        .handle_map
+                        .workspace_handle
+                        .get(&workspace_id)
+                        .cloned()
+                    else {
                         continue;
-                    }
-
-                    let (target_workspace_name, target_workspace_handle) =
-                        &target_group.workspaces[0];
-                    let output = if !initial_outputs.is_empty() {
-                        initial_outputs[0].clone()
-                    } else if !state.outputs.is_empty() {
-                        state.outputs[0].0.clone()
-                    } else {
-                        return Err(CliError::new("No outputs available.".into()));
                     };
 
-                    tracing::debug!(
-                        "Moving app to workspace group {target_gi}, workspace '{target_workspace_name}'",
-                    );
-                    manager.move_to_ext_workspace(
-                        &last_app.handle,
-                        target_workspace_handle,
-                        &output,
-                    );
-                    conn.flush()?;
-
-                    // Wait a bit for the change to propagate
-                    std::thread::sleep(std::time::Duration::from_millis(300));
-                    event_queue.roundtrip(&mut state)?;
-
-                    // Discover outputs for this workspace group by checking the app's outputs
-                    if let Some(group) = state.workspace_groups.get_mut(target_gi) {
-                        group.outputs.clear();
-                        for output_handle in &last_app.outputs {
-                            if let Some((_, output_name)) =
-                                state.outputs.iter().find(|(wo, _)| wo == output_handle)
-                            {
-                                group
-                                    .outputs
-                                    .push((output_handle.clone(), output_name.clone()));
-                                tracing::debug!(
-                                    "Discovered output '{output_name}' for workspace group {target_gi}",
-                                );
-                            }
+                    for (output_index, output_id) in state.outputs.clone().into_iter().enumerate() {
+                        if initial_app_output == &output_id {
+                            continue;
                         }
-                    }
 
-                    // Print output information
-                    if !last_app.outputs.is_empty() {
-                        for output_handle in &last_app.outputs {
-                            if let Some((_, output_name)) =
-                                state.outputs.iter().find(|(wo, _)| wo == output_handle)
-                            {
-                                tracing::debug!("App is now on output: {output_name}");
-                            }
-                        }
-                    } else {
-                        tracing::debug!("App outputs: none");
-                    }
+                        let Some(output) = state.handle_map.output.get(&output_id).cloned() else {
+                            continue;
+                        };
 
-                    if !last_app.workspaces.is_empty() {
-                        for ws_handle in &last_app.workspaces {
-                            for (gi, group) in state.workspace_groups.iter().enumerate() {
-                                if let Some((ws_name, _)) =
-                                    group.workspaces.iter().find(|(_, hw)| hw == ws_handle)
-                                {
-                                    tracing::debug!(
-                                        "App is now in workspace group {gi}, workspace '{ws_name}'",
-                                    );
-                                }
-                            }
+                        tracing::debug!(
+                            "Moving app to workspace group {group_index} workspace '{}' at output: {output_index}",
+                            nh.name.as_deref().unwrap_or_default()
+                        );
+                        manager.move_to_ext_workspace(&last_app.handle, &nh.handle, &output.handle);
+                        conn.flush()?;
+
+                        std::thread::sleep(std::time::Duration::from_millis(300));
+                        event_queue.roundtrip(&mut state)?;
+
+                        // check new state
+                        let Some(new_app_state) =
+                            state.apps.iter().find(|a| a.handle == last_app.handle)
+                        else {
+                            continue;
+                        };
+
+                        // app was change output - associate it with workspace group
+                        if new_app_state.outputs.contains(&output_id) {
+                            was_moved = true;
+                            tracing::debug!(
+                                "App moved. Add output {output_index} to the workspace group"
+                            );
+                            let Some(wg) = state
+                                .workspace_groups
+                                .iter_mut()
+                                .find(|g| g.object_id == group_id)
+                            else {
+                                continue;
+                            };
+                            wg.outputs.push(output_id.clone())
+                        } else {
+                            tracing::debug!("App not changes output");
                         }
-                    } else {
-                        tracing::debug!("App workspaces: none");
                     }
                 }
 
-                // Move app back to the exact initial workspace
-                let output = if !last_app.outputs.is_empty() {
-                    last_app.outputs[0].clone()
-                } else if !state.outputs.is_empty() {
-                    state.outputs[0].0.clone()
-                } else {
-                    return Err(CliError::new("No outputs available.".into()));
-                };
-
-                if let Some((initial_ws_name, _)) = state
-                    .workspace_groups
-                    .get(initial_group_index)
-                    .and_then(|g| {
-                        g.workspaces
-                            .iter()
-                            .find(|(_, hw)| *hw == initial_workspace_handle)
-                    })
+                if was_moved
+                    && let Some(workspace) = state
+                        .handle_map
+                        .workspace_handle
+                        .get(initial_app_workspace)
+                        .map(|nh| &nh.handle)
+                    && let Some(output) = state
+                        .handle_map
+                        .output
+                        .get(initial_app_output)
+                        .map(|nh| &nh.handle)
                 {
-                    tracing::debug!(
-                        "Moving app back to initial workspace group {initial_group_index}, workspace '{initial_ws_name}'",
-                    );
-                    manager.move_to_ext_workspace(
-                        &last_app.handle,
-                        &initial_workspace_handle,
-                        &output,
-                    );
+                    tracing::debug!("Discover output by app moving done");
+                    // move app back
+                    manager.move_to_ext_workspace(&last_app.handle, workspace, output);
                     conn.flush()?;
 
-                    // Wait a bit for the change to propagate
                     std::thread::sleep(std::time::Duration::from_millis(300));
                     event_queue.roundtrip(&mut state)?;
-
-                    // Discover outputs for the initial workspace group
-                    if let Some(group) = state.workspace_groups.get_mut(initial_group_index) {
-                        group.outputs.clear();
-                        for output_handle in &last_app.outputs {
-                            if let Some((_, output_name)) =
-                                state.outputs.iter().find(|(wo, _)| wo == output_handle)
-                            {
-                                group
-                                    .outputs
-                                    .push((output_handle.clone(), output_name.clone()));
-                                tracing::debug!(
-                                    "Discovered output '{output_name}' for initial workspace group {initial_group_index}",
-                                );
-                            }
-                        }
-                    }
+                } else {
+                    tracing::debug!("Failed to discover output by app moving");
                 }
             }
 
@@ -688,11 +678,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                                 .outputs
                                 .iter()
                                 .filter_map(|o| {
-                                    state.outputs.iter().position(|(wo, _)| wo == o).map(|idx| {
+                                    state.handle_map.output.get(o).and_then(|h| {
                                         JsonOutputRef {
-                                            index: idx,
-                                            name: state.outputs[idx].1.clone(),
+                                            index: state.outputs.iter().position(|oid| oid == o)?,
+                                            name: h.name.clone()?,
                                         }
+                                        .into()
                                     })
                                 })
                                 .collect();
@@ -700,16 +691,26 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                                 .workspaces
                                 .iter()
                                 .filter_map(|w| {
-                                    state.workspace_groups.iter().enumerate().find_map(
-                                        |(gi, group)| {
-                                            group.workspaces.iter().find(|(_, hw)| hw == w).map(
-                                                |(name, _)| JsonWorkspaceRef {
-                                                    group_index: gi,
-                                                    workspace: name.to_owned(),
-                                                },
-                                            )
-                                        },
-                                    )
+                                    Some(JsonWorkspaceRef {
+                                        index: state
+                                            .workspace_groups
+                                            .iter()
+                                            .filter_map(|wg| {
+                                                wg.workspaces.iter().position(|i| i == w)
+                                            })
+                                            .next()?,
+                                        group_index: state
+                                            .workspace_groups
+                                            .iter()
+                                            .position(|wg| wg.workspaces.contains(w))?,
+                                        workspace: state
+                                            .handle_map
+                                            .workspace_handle
+                                            .get(w)
+                                            .and_then(|nh| nh.name.as_deref())
+                                            .unwrap_or("not found")
+                                            .to_string(),
+                                    })
                                 })
                                 .collect();
                             JsonApp {
@@ -728,26 +729,44 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         .enumerate()
                         .map(|(i, group)| JsonWorkspaceGroup {
                             index: i,
-                            workspaces: group.workspaces.iter().map(|(n, _)| n.clone()).collect(),
-                            outputs: group.outputs.iter().map(|(_, n)| n.clone()).collect(),
+                            workspaces: state
+                                .handle_map
+                                .workspace_names(group)
+                                .map(ToOwned::to_owned)
+                                .collect(),
+                            outputs: group
+                                .outputs
+                                .iter()
+                                .filter_map(|oid| {
+                                    state
+                                        .handle_map
+                                        .output
+                                        .get(oid)
+                                        .and_then(|h| h.name.clone())
+                                })
+                                .collect(),
                         })
                         .collect(),
                     outputs: state
                         .outputs
                         .iter()
                         .enumerate()
-                        .map(|(i, (_, name))| JsonOutput {
-                            index: i,
-                            name: name.clone(),
+                        .filter_map(|(i, oid)| {
+                            state.handle_map.output.get(oid).map(|h| JsonOutput {
+                                index: i,
+                                name: h.name.clone().unwrap_or_default(),
+                            })
                         })
                         .collect(),
                     seats: state
                         .seats
                         .iter()
                         .enumerate()
-                        .map(|(i, (_, name))| JsonSeat {
-                            index: i,
-                            name: name.clone(),
+                        .filter_map(|(i, sid)| {
+                            state.handle_map.seat.get(sid).map(|h| JsonSeat {
+                                index: i,
+                                name: h.name.clone().unwrap_or_default(),
+                            })
                         })
                         .collect(),
                 };
@@ -766,10 +785,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         .iter()
                         .filter_map(|o| {
                             state
-                                .outputs
-                                .iter()
-                                .find(|(wo, _)| wo == o)
-                                .map(|(_, n)| n.as_str())
+                                .handle_map
+                                .output
+                                .get(o)
+                                .and_then(|h| h.name.as_deref())
                         })
                         .collect::<Vec<_>>()
                         .join(", ");
@@ -784,7 +803,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                                 .find_map(|(gi, g)| {
                                     g.workspaces
                                         .iter()
-                                        .position(|(_, hw)| hw == w)
+                                        .position(|hw| hw == w)
                                         .map(|wi| format!("{}.\"{}\"", gi, wi))
                                 })
                         })
@@ -805,7 +824,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     let output_names = group
                         .outputs
                         .iter()
-                        .map(|(_, n)| n.as_str())
+                        .filter_map(|oid| {
+                            state
+                                .handle_map
+                                .output
+                                .get(oid)
+                                .and_then(|h| h.name.as_deref())
+                        })
                         .collect::<Vec<_>>()
                         .join(", ");
                     if output_names.is_empty() {
@@ -813,17 +838,29 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     } else {
                         println!("\t[{i}] Group (outputs: {output_names})");
                     }
-                    for (workspace, _) in group.workspaces.iter() {
-                        println!("\t\tWorkspace: {workspace}");
+                    for (j, _) in group.workspaces.iter().enumerate() {
+                        println!("\t\tWorkspace: {j}");
                     }
                 }
                 println!("Outputs:");
-                for (i, (_, name)) in state.outputs.iter().enumerate() {
+                for (i, oid) in state.outputs.iter().enumerate() {
+                    let name = state
+                        .handle_map
+                        .output
+                        .get(oid)
+                        .and_then(|h| h.name.as_deref())
+                        .unwrap_or("unknown");
                     println!("\t[{i}] Output: {name}");
                 }
 
                 println!("Seats:");
-                for (i, (_, name)) in state.seats.iter().enumerate() {
+                for (i, sid) in state.seats.iter().enumerate() {
+                    let name = state
+                        .handle_map
+                        .seat
+                        .get(sid)
+                        .and_then(|h| h.name.as_deref())
+                        .unwrap_or("unknown");
                     println!("\t[{i}] Seat: {name}");
                 }
             }
@@ -838,42 +875,69 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             };
             println!("Connected to cosmic toplevel manager!");
 
-            let Some((_, workspace)) = (if let Some(group_index) = args.workspace_group_index {
-                if let Some(group) = state.workspace_groups.get(group_index) {
-                    group
-                        .workspaces
-                        .iter()
-                        .find(|(w, _)| w == &args.workspace_name)
-                } else {
+            let workspace_index = if let Some(group_index) = args.workspace_group_index {
+                let group = state.workspace_groups.get(group_index).ok_or_else(|| {
+                    CliError::new(format!("Workspace group not found: {}", group_index))
+                })?;
+                let idx = args.workspace_name.parse::<usize>().map_err(|_| {
+                    CliError::new(format!("Invalid workspace index: {}", args.workspace_name))
+                })?;
+                if idx >= group.workspaces.len() {
                     return Err(CliError::new(format!(
-                        "Workspace group not found: {}",
-                        group_index
+                        "Workspace index {} out of range (group has {} workspaces)",
+                        idx,
+                        group.workspaces.len()
                     )));
                 }
+                (group_index, idx)
             } else {
-                state
-                    .workspace_groups
-                    .iter()
-                    .flat_map(|g| g.workspaces.iter())
-                    .find(|(w, _)| w == &args.workspace_name)
-            }) else {
-                return Err(CliError::new(format!(
-                    "Workspace not found: {}",
-                    args.workspace_name
-                )));
+                let mut found = None;
+                for (gi, group) in state.workspace_groups.iter().enumerate() {
+                    for (wi, _) in group.workspaces.iter().enumerate() {
+                        if format!("{}", wi) == args.workspace_name {
+                            found = Some((gi, wi));
+                            break;
+                        }
+                    }
+                    if found.is_some() {
+                        break;
+                    }
+                }
+                found.ok_or_else(|| {
+                    CliError::new(format!("Workspace not found: {}", args.workspace_name))
+                })?
+            };
+
+            let (group_index, idx) = workspace_index;
+            let workspace_handle = &state.workspace_groups[group_index].workspaces[idx];
+            let Some(workspace) = state.handle_map.workspace_handle.get(workspace_handle) else {
+                return Err(CliError::new(
+                    "Workspace handle not found in handle map".into(),
+                ));
             };
 
             let output = if let Some(index) = args.output_index {
-                if let Some(output) = state.outputs.get(index) {
-                    output.0.clone()
-                } else {
-                    return Err(CliError::new(format!("Output index not found: {}", index)));
-                }
+                let oid = state
+                    .outputs
+                    .get(index)
+                    .ok_or_else(|| CliError::new(format!("Output index not found: {}", index)))?;
+                state
+                    .handle_map
+                    .output
+                    .get(oid)
+                    .map(|h| h.handle.clone())
+                    .ok_or_else(|| CliError::new("Output handle not found in handle map".into()))?
             } else {
                 if state.outputs.is_empty() {
                     return Err(CliError::new("No outputs found.".to_string()));
                 }
-                state.outputs[0].0.clone()
+                let oid = &state.outputs[0];
+                state
+                    .handle_map
+                    .output
+                    .get(oid)
+                    .map(|h| h.handle.clone())
+                    .ok_or_else(|| CliError::new("Output handle not found in handle map".into()))?
             };
 
             for app in apps_to_move {
@@ -882,7 +946,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     app.app_id.as_deref().unwrap_or_default(),
                     args.workspace_name,
                 );
-                manager.move_to_ext_workspace(&app.handle, workspace, &output);
+                manager.move_to_ext_workspace(&app.handle, &workspace.handle, &output);
             }
 
             conn.flush()?;
@@ -900,17 +964,28 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 )));
             };
             let seat = if let Some(seat_index) = args.seat_index {
+                let sid = state.seats.get(seat_index).ok_or_else(|| {
+                    CliError::new(format!("Seat index not found: {}", seat_index))
+                })?;
                 state
-                    .seats
-                    .get(seat_index)
-                    .ok_or_else(|| CliError::new(format!("Seat index not found: {}", seat_index)))?
+                    .handle_map
+                    .seat
+                    .get(sid)
+                    .map(|h| &h.handle)
+                    .ok_or_else(|| CliError::new("Seat handle not found in handle map".into()))?
             } else {
-                state
+                let sid = state
                     .seats
                     .first()
-                    .ok_or_else(|| CliError::new("No seats found.".to_string()))?
+                    .ok_or_else(|| CliError::new("No seats found.".to_string()))?;
+                state
+                    .handle_map
+                    .seat
+                    .get(sid)
+                    .map(|h| &h.handle)
+                    .ok_or_else(|| CliError::new("Seat handle not found in handle map".into()))?
             };
-            manager.activate(&app.handle, &seat.0);
+            manager.activate(&app.handle, seat);
             conn.flush()?;
         }
         Command::State(args) => {

@@ -9,6 +9,7 @@ use cosmic_protocols::workspace::v2::client::{
     zcosmic_workspace_handle_v2, zcosmic_workspace_manager_v2,
 };
 
+use wayland_client::Proxy;
 use wayland_client::protocol::wl_seat;
 use wayland_client::{
     Connection, Dispatch, QueueHandle, event_created_child,
@@ -18,7 +19,7 @@ use wayland_protocols::ext::workspace::v1::client::{
     ext_workspace_group_handle_v1, ext_workspace_handle_v1, ext_workspace_manager_v1,
 };
 
-use crate::{App, AppState, State};
+use crate::{App, AppState, NamedHandle, State};
 
 pub fn bind(proxy: &wl_registry::WlRegistry, qh: &QueueHandle<AppState>, state: &mut AppState) {
     if let Some((name, version)) = state.available_interfaces.get("ext_workspace_manager_v1") {
@@ -126,7 +127,12 @@ impl Dispatch<wl_output::WlOutput, ()> for AppState {
         tracing::debug!(event = ?event, output = ?output, "WlOutput");
         match event {
             wl_output::Event::Name { name } => {
-                app_data.outputs.push((output.clone(), name));
+                let output_id = output.id();
+                app_data.handle_map.output.insert(
+                    output_id.clone(),
+                    NamedHandle::named(&name, output.to_owned()),
+                );
+                app_data.outputs.push(output_id);
             }
             wl_output::Event::Done => {
                 app_data.discover_done = true;
@@ -147,7 +153,12 @@ impl Dispatch<wl_seat::WlSeat, ()> for AppState {
     ) {
         tracing::debug!(event = ?event, seat = ?seat, "WlSeat");
         if let wl_seat::Event::Name { name } = event {
-            app_data.seats.push((seat.clone(), name));
+            let id = seat.id();
+            app_data
+                .handle_map
+                .seat
+                .insert(id.clone(), NamedHandle::named(&name, seat.to_owned()));
+            app_data.seats.push(id)
         }
     }
 }
@@ -164,9 +175,8 @@ impl Dispatch<ext_workspace_manager_v1::ExtWorkspaceManagerV1, ()> for AppState 
         tracing::debug!(event = ?event, proxy = ?proxy, "ExtWorkspaceManagerV1");
         if let ext_workspace_manager_v1::Event::WorkspaceGroup { workspace_group } = event {
             state.workspace_groups.push(crate::WorkspaceGroup {
-                handle: workspace_group,
+                object_id: workspace_group.id(),
                 workspaces: Vec::new(),
-                // to discover later by moving app and listen zcosmic_toplevel_handle_v1::Event::OutputEnter|OutputLeave
                 outputs: Vec::new(),
             })
         }
@@ -221,12 +231,10 @@ impl Dispatch<ext_workspace_handle_v1::ExtWorkspaceHandleV1, ()> for AppState {
     ) {
         tracing::debug!(event = ?event, proxy = ?proxy, "ExtWorkspaceHandleV1");
         if let ext_workspace_handle_v1::Event::Name { name } = event {
-            for group in state.workspace_groups.iter_mut() {
-                if let Some(workspace) = group.workspaces.iter_mut().find(|(_, h)| *h == *proxy) {
-                    workspace.0 = name;
-                    break;
-                }
-            }
+            state
+                .handle_map
+                .workspace_handle
+                .insert(proxy.id(), NamedHandle::named(&name, proxy.to_owned()));
         }
     }
 }
@@ -242,12 +250,13 @@ impl Dispatch<ext_workspace_group_handle_v1::ExtWorkspaceGroupHandleV1, ()> for 
     ) {
         tracing::debug!(event = ?event, proxy = ?proxy, "ExtWorkspaceGroupHandleV1");
         if let ext_workspace_group_handle_v1::Event::WorkspaceEnter { workspace } = event {
+            let id = proxy.id();
             if let Some(group) = state
                 .workspace_groups
                 .iter_mut()
-                .find(|g| &g.handle == proxy)
+                .find(|g| g.object_id == id)
             {
-                group.workspaces.push(("unknown".to_string(), workspace));
+                group.workspaces.push(workspace.id());
             } else {
                 tracing::debug!("Workspace group not found")
             }
@@ -309,55 +318,42 @@ impl Dispatch<zcosmic_toplevel_handle_v1::ZcosmicToplevelHandleV1, ()> for AppSt
         _: &QueueHandle<AppState>,
     ) {
         tracing::debug!(event = ?event, proxy = ?toplevel, "ZcosmicToplevelHandleV1");
+        let Some(info) = app_data.apps.iter_mut().find(|t| &t.handle == toplevel) else {
+            return;
+        };
         match event {
             zcosmic_toplevel_handle_v1::Event::Title { title } => {
-                if let Some(info) = app_data.apps.iter_mut().find(|t| &t.handle == toplevel) {
-                    info.title = Some(title);
-                }
+                info.title = Some(title);
             }
             zcosmic_toplevel_handle_v1::Event::AppId { app_id } => {
-                if let Some(info) = app_data.apps.iter_mut().find(|t| &t.handle == toplevel) {
-                    info.app_id = Some(app_id);
-                }
+                info.app_id = Some(app_id);
             }
             zcosmic_toplevel_handle_v1::Event::OutputEnter { output } => {
-                if let Some(info) = app_data.apps.iter_mut().find(|t| &t.handle == toplevel) {
-                    info.outputs.push(output);
-                }
+                info.outputs.push(output.id());
             }
             zcosmic_toplevel_handle_v1::Event::OutputLeave { output } => {
-                if let Some(info) = app_data.apps.iter_mut().find(|t| &t.handle == toplevel) {
-                    info.outputs.retain(|o| o != &output);
-                }
+                let output_id = output.id();
+                info.outputs.retain(|o| o != &output_id);
             }
             zcosmic_toplevel_handle_v1::Event::ExtWorkspaceEnter { workspace } => {
-                if let Some(info) = app_data.apps.iter_mut().find(|t| &t.handle == toplevel) {
-                    info.workspaces.push(workspace);
-                }
+                info.workspaces.push(workspace.id());
             }
             zcosmic_toplevel_handle_v1::Event::ExtWorkspaceLeave { workspace } => {
-                if let Some(info) = app_data.apps.iter_mut().find(|t| &t.handle == toplevel) {
-                    info.workspaces.retain(|w| w != &workspace);
-                }
+                let workspace_id = workspace.id();
+                info.workspaces.retain(|w| w != &workspace_id);
             }
             // zcosmic_toplevel_handle_v1::Event::WorkspaceEnter { workspace } => {
-            //     if let Some(info) = app_data.apps.iter_mut().find(|t| &t.handle == toplevel) {
             //         info.workspaces.push(workspace);
-            //     }
             // }
             // zcosmic_toplevel_handle_v1::Event::WorkspaceLeave { workspace } => {
-            //     if let Some(info) = app_data.apps.iter_mut().find(|t| &t.handle == toplevel) {
             //         info.workspaces.retain(|w| w != &workspace);
-            //     }
             // }
             zcosmic_toplevel_handle_v1::Event::State { state } => {
-                if let Some(info) = app_data.apps.iter_mut().find(|t| &t.handle == toplevel) {
-                    info.state = state
-                        .chunks_exact(4)
-                        .map(|chunk| u32::from_ne_bytes(chunk.try_into().unwrap()))
-                        .flat_map(|val| State::try_from(val).ok())
-                        .collect::<Vec<_>>();
-                }
+                info.state = state
+                    .chunks_exact(4)
+                    .map(|chunk| u32::from_ne_bytes(chunk.try_into().unwrap()))
+                    .flat_map(|val| State::try_from(val).ok())
+                    .collect::<Vec<_>>();
             }
             _ => {}
         }
