@@ -134,9 +134,7 @@ impl Dispatch<wl_output::WlOutput, ()> for AppState {
                 );
                 app_data.outputs.push(output_id);
             }
-            wl_output::Event::Done => {
-                app_data.discover_done = true;
-            }
+            wl_output::Event::Done => {}
             _ => {}
         }
     }

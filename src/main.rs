@@ -171,12 +171,15 @@ struct AppState {
     outputs: Vec<ObjectId>,
     seats: Vec<ObjectId>,
     apps: Vec<App>,
-    discover_done: bool,
 }
 
 impl AppState {
     fn new() -> Self {
         Self::default()
+    }
+
+    fn entities_count(&self) -> usize {
+        self.outputs.len() + self.seats.len() + self.apps.len() + self.workspace_groups.len()
     }
 }
 
@@ -519,12 +522,20 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     event_queue.roundtrip(&mut state)?;
     dispatch::bind(&registry, &qh, &mut state);
-    for _ in 0..10 {
+    event_queue.roundtrip(&mut state)?;
+    tracing::debug!("Discovered {}", state.entities_count(),);
+
+    let mut entities_count = 0;
+    for i in 0..10 {
         event_queue.roundtrip(&mut state)?;
         std::thread::sleep(std::time::Duration::from_millis(100));
-        if state.discover_done {
+        let new_entities_count = state.entities_count();
+        tracing::debug!("Step {i}. Discovered {new_entities_count} (previous: {entities_count})");
+
+        if new_entities_count == entities_count {
             break;
         }
+        entities_count = new_entities_count;
     }
 
     match command {
