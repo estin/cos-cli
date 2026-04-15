@@ -166,7 +166,7 @@ impl HandleMap {
 struct AppState {
     handle_map: HandleMap,
     cosmic_toplevel_manager: Option<zcosmic_toplevel_manager_v1::ZcosmicToplevelManagerV1>,
-    available_interfaces: HashMap<String, (u32, u32)>,
+    available_interfaces: HashMap<String, Vec<(u32, u32)>>,
     workspace_groups: Vec<WorkspaceGroup>,
     outputs: Vec<ObjectId>,
     seats: Vec<ObjectId>,

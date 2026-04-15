@@ -22,68 +22,92 @@ use wayland_protocols::ext::workspace::v1::client::{
 use crate::{App, AppState, NamedHandle, State};
 
 pub fn bind(proxy: &wl_registry::WlRegistry, qh: &QueueHandle<AppState>, state: &mut AppState) {
-    if let Some((name, version)) = state.available_interfaces.get("ext_workspace_manager_v1") {
-        proxy.bind::<ext_workspace_manager_v1::ExtWorkspaceManagerV1, _, _>(
-            *name,
-            *version,
-            qh,
-            (),
-        );
-    }
-    if let Some((name, version)) = state
-        .available_interfaces
-        .get("zcosmic_workspace_manager_v1")
-    {
-        proxy.bind::<zcosmic_workspace_manager_v1::ZcosmicWorkspaceManagerV1, _, _>(
-            *name,
-            *version,
-            qh,
-            (),
-        );
-    }
-    if let Some((name, version)) = state
-        .available_interfaces
-        .get("zcosmic_toplevel_manager_v1")
-    {
-        state.cosmic_toplevel_manager = Some(
-            proxy.bind::<zcosmic_toplevel_manager_v1::ZcosmicToplevelManagerV1, _, _>(
+    if let Some(items) = state.available_interfaces.get("ext_workspace_manager_v1") {
+        for (name, version) in items {
+            tracing::debug!("Bind ext_workspace_manager_v1 name: {name} version: {version}");
+            proxy.bind::<ext_workspace_manager_v1::ExtWorkspaceManagerV1, _, _>(
                 *name,
                 *version,
                 qh,
                 (),
-            ),
-        );
+            );
+        }
     }
-    if let Some((name, version)) = state
+    if let Some(items) = state
+        .available_interfaces
+        .get("zcosmic_workspace_manager_v1")
+    {
+        for (name, version) in items {
+            tracing::debug!("Bind zcosmic_workspace_manager_v1 name: {name} version: {version}");
+            proxy.bind::<zcosmic_workspace_manager_v1::ZcosmicWorkspaceManagerV1, _, _>(
+                *name,
+                *version,
+                qh,
+                (),
+            );
+        }
+    }
+    if let Some(items) = state
+        .available_interfaces
+        .get("zcosmic_toplevel_manager_v1")
+    {
+        for (name, version) in items {
+            tracing::debug!("Bind zcosmic_toplevel_manager_v1 name: {name} version: {version}");
+            state.cosmic_toplevel_manager = Some(
+                proxy.bind::<zcosmic_toplevel_manager_v1::ZcosmicToplevelManagerV1, _, _>(
+                    *name,
+                    *version,
+                    qh,
+                    (),
+                ),
+            );
+        }
+    }
+    if let Some(items) = state
         .available_interfaces
         .get("zcosmic_workspace_manager_v2")
     {
-        proxy.bind::<zcosmic_workspace_manager_v2::ZcosmicWorkspaceManagerV2, _, _>(
-            *name,
-            *version,
-            qh,
-            (),
-        );
+        for (name, version) in items {
+            tracing::debug!("Bind zcosmic_workspace_manager_v2 name: {name} version: {version}");
+            proxy.bind::<zcosmic_workspace_manager_v2::ZcosmicWorkspaceManagerV2, _, _>(
+                *name,
+                *version,
+                qh,
+                (),
+            );
+        }
     }
-    if let Some((name, version)) = state
+    if let Some(items) = state
         .available_interfaces
         .get("zcosmic_workspace_handle_v2")
     {
-        proxy.bind::<zcosmic_workspace_handle_v2::ZcosmicWorkspaceHandleV2, _, _>(
-            *name,
-            *version,
-            qh,
-            (),
-        );
+        for (name, version) in items {
+            tracing::debug!("Bind zcosmic_workspace_handle_v2 name: {name} version: {version}");
+            proxy.bind::<zcosmic_workspace_handle_v2::ZcosmicWorkspaceHandleV2, _, _>(
+                *name,
+                *version,
+                qh,
+                (),
+            );
+        }
     }
-    if let Some((name, version)) = state.available_interfaces.get("wl_output") {
-        proxy.bind::<wl_output::WlOutput, _, _>(*name, *version, qh, ());
+    if let Some(items) = state.available_interfaces.get("wl_output") {
+        for (name, version) in items {
+            tracing::debug!("Bind wl_output name: {name} version: {version}");
+            proxy.bind::<wl_output::WlOutput, _, _>(*name, *version, qh, ());
+        }
     }
-    if let Some((name, version)) = state.available_interfaces.get("wl_seat") {
-        proxy.bind::<wl_seat::WlSeat, _, _>(*name, *version, qh, ());
+    if let Some(items) = state.available_interfaces.get("wl_seat") {
+        for (name, version) in items {
+            tracing::debug!("Bind wl_seat name: {name} version: {version}");
+            proxy.bind::<wl_seat::WlSeat, _, _>(*name, *version, qh, ());
+        }
     }
-    if let Some((name, _version)) = state.available_interfaces.get("zcosmic_toplevel_info_v1") {
-        proxy.bind::<zcosmic_toplevel_info_v1::ZcosmicToplevelInfoV1, _, _>(*name, 1, qh, ());
+    if let Some(items) = state.available_interfaces.get("zcosmic_toplevel_info_v1") {
+        for (name, version) in items {
+            tracing::debug!("Bind zcosmic_toplevel_info_v1 name: {name} version: {version}");
+            proxy.bind::<zcosmic_toplevel_info_v1::ZcosmicToplevelInfoV1, _, _>(*name, 1, qh, ());
+        }
     }
 }
 
@@ -110,7 +134,9 @@ impl Dispatch<wl_registry::WlRegistry, ()> for AppState {
             );
             state
                 .available_interfaces
-                .insert(interface.clone(), (name, version));
+                .entry(interface.clone())
+                .and_modify(|items| items.push((name, version)))
+                .or_insert_with(|| vec![(name, version)]);
         }
     }
 }
