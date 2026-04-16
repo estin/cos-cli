@@ -60,6 +60,11 @@ Example output:
 {"apps":[{"index":0,"app_id":"firefox","title":"Gemini - Mozilla Firefox","state":["activated"]},{"index":1,"app_id":"org.wezfurlong.wezterm","title":"cos-cli","state":["maximized"]}],"workspaces":[{"index":0,"workspaces":[{"name":"1"},{"name":"2"},{"name":"3"}]}],"outputs":[{"index":0,"name":"eDP-1"}],"seats":[{"index":0,"name":"seat0"}]}
 ````
 
+With `--discover-wg-output` it will discover which output each workspace group is on by moving an app across outputs. This is useful for populating the output information for workspace groups when the compositor does not provide it directly.
+````console
+cos-cli info --discover-wg-output
+````
+
 Using `jq` to find app index by pattern and activate app
 ````console
 cos-cli activate -i $(cos-cli info --json | jq '.apps[] | select(.app_id | test("wezterm")) | .index')

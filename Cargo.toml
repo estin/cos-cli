@@ -1,6 +1,6 @@
 [package]
 name = "cos-cli"
-version = "0.3.1"
+version = "0.4.0"
 edition = "2024"
 
 [dependencies]
@@ -8,3 +8,7 @@ wayland-client = "0.31"
 wayland-protocols = { version = "0.32", features = ["client", "staging"] }
 cosmic-protocols = { git = "https://github.com/pop-os/cosmic-protocols", features = ["client"] }
 pico-args = "0.5"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"

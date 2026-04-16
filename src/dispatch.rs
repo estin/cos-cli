@@ -2,13 +2,14 @@ use cosmic_protocols::toplevel_info::v1::client::{
     zcosmic_toplevel_handle_v1, zcosmic_toplevel_info_v1,
 };
 use cosmic_protocols::toplevel_management::v1::client::zcosmic_toplevel_manager_v1;
-// use cosmic_protocols::workspace::v1::client::{
-//     zcosmic_workspace_group_handle_v1, zcosmic_workspace_manager_v1,
-// };
-// use cosmic_protocols::workspace::v2::client::{
-//     zcosmic_workspace_handle_v2, zcosmic_workspace_manager_v2,
-// };
+use cosmic_protocols::workspace::v1::client::{
+    zcosmic_workspace_group_handle_v1, zcosmic_workspace_manager_v1,
+};
+use cosmic_protocols::workspace::v2::client::{
+    zcosmic_workspace_handle_v2, zcosmic_workspace_manager_v2,
+};
 
+use wayland_client::Proxy;
 use wayland_client::protocol::wl_seat;
 use wayland_client::{
     Connection, Dispatch, QueueHandle, event_created_child,
@@ -18,16 +19,106 @@ use wayland_protocols::ext::workspace::v1::client::{
     ext_workspace_group_handle_v1, ext_workspace_handle_v1, ext_workspace_manager_v1,
 };
 
-use crate::{App, AppState, State};
+use crate::{App, AppState, NamedHandle, State};
+
+pub fn bind(proxy: &wl_registry::WlRegistry, qh: &QueueHandle<AppState>, state: &mut AppState) {
+    if let Some(items) = state.available_interfaces.get("ext_workspace_manager_v1") {
+        for (name, version) in items {
+            tracing::debug!("Bind ext_workspace_manager_v1 name: {name} version: {version}");
+            proxy.bind::<ext_workspace_manager_v1::ExtWorkspaceManagerV1, _, _>(
+                *name,
+                *version,
+                qh,
+                (),
+            );
+        }
+    }
+    if let Some(items) = state
+        .available_interfaces
+        .get("zcosmic_workspace_manager_v1")
+    {
+        for (name, version) in items {
+            tracing::debug!("Bind zcosmic_workspace_manager_v1 name: {name} version: {version}");
+            proxy.bind::<zcosmic_workspace_manager_v1::ZcosmicWorkspaceManagerV1, _, _>(
+                *name,
+                *version,
+                qh,
+                (),
+            );
+        }
+    }
+    if let Some(items) = state
+        .available_interfaces
+        .get("zcosmic_toplevel_manager_v1")
+    {
+        for (name, version) in items {
+            tracing::debug!("Bind zcosmic_toplevel_manager_v1 name: {name} version: {version}");
+            state.cosmic_toplevel_manager = Some(
+                proxy.bind::<zcosmic_toplevel_manager_v1::ZcosmicToplevelManagerV1, _, _>(
+                    *name,
+                    *version,
+                    qh,
+                    (),
+                ),
+            );
+        }
+    }
+    if let Some(items) = state
+        .available_interfaces
+        .get("zcosmic_workspace_manager_v2")
+    {
+        for (name, version) in items {
+            tracing::debug!("Bind zcosmic_workspace_manager_v2 name: {name} version: {version}");
+            proxy.bind::<zcosmic_workspace_manager_v2::ZcosmicWorkspaceManagerV2, _, _>(
+                *name,
+                *version,
+                qh,
+                (),
+            );
+        }
+    }
+    if let Some(items) = state
+        .available_interfaces
+        .get("zcosmic_workspace_handle_v2")
+    {
+        for (name, version) in items {
+            tracing::debug!("Bind zcosmic_workspace_handle_v2 name: {name} version: {version}");
+            proxy.bind::<zcosmic_workspace_handle_v2::ZcosmicWorkspaceHandleV2, _, _>(
+                *name,
+                *version,
+                qh,
+                (),
+            );
+        }
+    }
+    if let Some(items) = state.available_interfaces.get("wl_output") {
+        for (name, version) in items {
+            tracing::debug!("Bind wl_output name: {name} version: {version}");
+            proxy.bind::<wl_output::WlOutput, _, _>(*name, *version, qh, ());
+        }
+    }
+    if let Some(items) = state.available_interfaces.get("wl_seat") {
+        for (name, version) in items {
+            tracing::debug!("Bind wl_seat name: {name} version: {version}");
+            proxy.bind::<wl_seat::WlSeat, _, _>(*name, *version, qh, ());
+        }
+    }
+    if let Some(items) = state.available_interfaces.get("zcosmic_toplevel_info_v1") {
+        for (name, version) in items {
+            tracing::debug!("Bind zcosmic_toplevel_info_v1 name: {name} version: {version}");
+            proxy.bind::<zcosmic_toplevel_info_v1::ZcosmicToplevelInfoV1, _, _>(*name, 1, qh, ());
+        }
+    }
+}
 
 impl Dispatch<wl_registry::WlRegistry, ()> for AppState {
     fn event(
         state: &mut Self,
-        proxy: &wl_registry::WlRegistry,
+        _proxy: &wl_registry::WlRegistry,
         event: wl_registry::Event,
         _data: &(),
         _conn: &Connection,
-        qh: &QueueHandle<Self>,
+        _qh: &QueueHandle<Self>,
     ) {
         if let wl_registry::Event::Global {
             name,
@@ -35,66 +126,17 @@ impl Dispatch<wl_registry::WlRegistry, ()> for AppState {
             version,
         } = event
         {
-            match interface.as_str() {
-                "wl_seat" => {
-                    proxy.bind::<wl_seat::WlSeat, _, _>(name, 4, qh, ());
-                }
-                "wl_output" => {
-                    proxy.bind::<wl_output::WlOutput, _, _>(name, 4, qh, ());
-                }
-                "zcosmic_toplevel_info_v1" => {
-                    proxy.bind::<zcosmic_toplevel_info_v1::ZcosmicToplevelInfoV1, _, _>(
-                        name,
-                        1,
-                        qh,
-                        (),
-                    );
-                }
-                "ext_workspace_manager_v1" => {
-                    proxy.bind::<ext_workspace_manager_v1::ExtWorkspaceManagerV1, _, _>(
-                        name,
-                        version,
-                        qh,
-                        (),
-                    );
-                }
-                "zcosmic_toplevel_manager_v1" => {
-                    state.cosmic_toplevel_manager = Some(
-                        proxy.bind::<zcosmic_toplevel_manager_v1::ZcosmicToplevelManagerV1, _, _>(
-                            name,
-                            version,
-                            qh,
-                            (),
-                        ),
-                    );
-                }
-
-                // "zcosmic_workspace_manager_v1" => {
-                //     proxy.bind::<zcosmic_workspace_manager_v1::ZcosmicWorkspaceManagerV1, _, _>(
-                //         name,
-                //         version,
-                //         qh,
-                //         (),
-                //     );
-                // }
-                // "zcosmic_workspace_manager_v2" => {
-                //     proxy.bind::<zcosmic_workspace_manager_v2::ZcosmicWorkspaceManagerV2, _, _>(
-                //         name,
-                //         version,
-                //         qh,
-                //         (),
-                //     );
-                // }
-                // "zcosmic_workspace_handle_v2" => {
-                //     proxy.bind::<zcosmic_workspace_handle_v2::ZcosmicWorkspaceHandleV2, _, _>(
-                //         name,
-                //         version,
-                //         qh,
-                //         (),
-                //     );
-                // }
-                _ => {}
-            }
+            tracing::debug!(
+                name = name,
+                interface = interface,
+                version = version,
+                "WlRegistry Global",
+            );
+            state
+                .available_interfaces
+                .entry(interface.clone())
+                .and_modify(|items| items.push((name, version)))
+                .or_insert_with(|| vec![(name, version)]);
         }
     }
 }
@@ -108,8 +150,18 @@ impl Dispatch<wl_output::WlOutput, ()> for AppState {
         _: &Connection,
         _: &QueueHandle<AppState>,
     ) {
-        if let wl_output::Event::Name { name } = event {
-            app_data.outputs.push((output.clone(), name));
+        tracing::debug!(event = ?event, output = ?output, "WlOutput");
+        match event {
+            wl_output::Event::Name { name } => {
+                let output_id = output.id();
+                app_data.handle_map.output.insert(
+                    output_id.clone(),
+                    NamedHandle::named(&name, output.to_owned()),
+                );
+                app_data.outputs.push(output_id);
+            }
+            wl_output::Event::Done => {}
+            _ => {}
         }
     }
 }
@@ -123,24 +175,34 @@ impl Dispatch<wl_seat::WlSeat, ()> for AppState {
         _: &Connection,
         _: &QueueHandle<AppState>,
     ) {
+        tracing::debug!(event = ?event, seat = ?seat, "WlSeat");
         if let wl_seat::Event::Name { name } = event {
-            app_data.seats.push((seat.clone(), name));
+            let id = seat.id();
+            app_data
+                .handle_map
+                .seat
+                .insert(id.clone(), NamedHandle::named(&name, seat.to_owned()));
+            app_data.seats.push(id)
         }
     }
 }
 
-// Implement Dispatch for the workspace manager to handle events like 'Workspace created'
 impl Dispatch<ext_workspace_manager_v1::ExtWorkspaceManagerV1, ()> for AppState {
     fn event(
         state: &mut Self,
-        _proxy: &ext_workspace_manager_v1::ExtWorkspaceManagerV1,
+        proxy: &ext_workspace_manager_v1::ExtWorkspaceManagerV1,
         event: ext_workspace_manager_v1::Event,
         _data: &(),
         _conn: &Connection,
         _qh: &QueueHandle<Self>,
     ) {
-        if let ext_workspace_manager_v1::Event::WorkspaceGroup { workspace_group: _ } = event {
-            state.workspace_group.push(Vec::new())
+        tracing::debug!(event = ?event, proxy = ?proxy, "ExtWorkspaceManagerV1");
+        if let ext_workspace_manager_v1::Event::WorkspaceGroup { workspace_group } = event {
+            state.workspace_groups.push(crate::WorkspaceGroup {
+                object_id: workspace_group.id(),
+                workspaces: Vec::new(),
+                outputs: Vec::new(),
+            })
         }
     }
 
@@ -154,6 +216,34 @@ impl Dispatch<ext_workspace_manager_v1::ExtWorkspaceManagerV1, ()> for AppState 
     );
 }
 
+// impl Dispatch<zcosmic_workspace_manager_v1::ZcosmicWorkspaceManagerV1, ()> for AppState {
+//     fn event(
+//         state: &mut Self,
+//         proxy: &zcosmic_workspace_manager_v1::ZcosmicWorkspaceManagerV1,
+//         event: zcosmic_workspace_manager_v1::Event,
+//         _data: &(),
+//         _conn: &Connection,
+//         _qh: &QueueHandle<Self>,
+//     ) {
+//         tracing::debug!(event = ?event, proxy = ?proxy, "ZcosmicWorkspaceManagerV1");
+//         // if let zcosmic_workspace_manager_v1::Event::WorkspaceGroup { workspace_group } = event {
+//         //     state.cosmic_workspace_groups.push(CosmicWorkspaceGroup {
+//         //         handle: workspace_group,
+//         //         workspaces: Vec::new(),
+//         //         outputs: Vec::new(),
+//         //     })
+//         // }
+//     }
+
+//     event_created_child!(
+//         AppState,
+//         zcosmic_workspace_manager_v1::ZcosmicWorkspaceManagerV1,
+//         [
+//             zcosmic_workspace_manager_v1::EVT_WORKSPACE_GROUP_OPCODE => (zcosmic_workspace_group_handle_v1::ZcosmicWorkspaceGroupHandleV1, ()),
+//         ]
+//     );
+// }
+
 impl Dispatch<ext_workspace_handle_v1::ExtWorkspaceHandleV1, ()> for AppState {
     fn event(
         state: &mut Self,
@@ -163,54 +253,71 @@ impl Dispatch<ext_workspace_handle_v1::ExtWorkspaceHandleV1, ()> for AppState {
         _conn: &Connection,
         _qh: &QueueHandle<Self>,
     ) {
-        if let ext_workspace_handle_v1::Event::Name { name } = event
-            && let Some(current_group) = state.workspace_group.last_mut()
-        {
-            current_group.push((name, proxy.clone()));
+        tracing::debug!(event = ?event, proxy = ?proxy, "ExtWorkspaceHandleV1");
+        if let ext_workspace_handle_v1::Event::Name { name } = event {
+            state
+                .handle_map
+                .workspace_handle
+                .insert(proxy.id(), NamedHandle::named(&name, proxy.to_owned()));
         }
     }
 }
 
 impl Dispatch<ext_workspace_group_handle_v1::ExtWorkspaceGroupHandleV1, ()> for AppState {
     fn event(
-        _state: &mut Self,
-        _proxy: &ext_workspace_group_handle_v1::ExtWorkspaceGroupHandleV1,
-        _event: ext_workspace_group_handle_v1::Event,
+        state: &mut Self,
+        proxy: &ext_workspace_group_handle_v1::ExtWorkspaceGroupHandleV1,
+        event: ext_workspace_group_handle_v1::Event,
         _data: &(),
         _conn: &Connection,
         _qh: &QueueHandle<Self>,
     ) {
+        tracing::debug!(event = ?event, proxy = ?proxy, "ExtWorkspaceGroupHandleV1");
+        if let ext_workspace_group_handle_v1::Event::WorkspaceEnter { workspace } = event {
+            let id = proxy.id();
+            if let Some(group) = state
+                .workspace_groups
+                .iter_mut()
+                .find(|g| g.object_id == id)
+            {
+                group.workspaces.push(workspace.id());
+            } else {
+                tracing::debug!("Workspace group not found")
+            }
+        }
     }
 }
 
 impl Dispatch<zcosmic_toplevel_manager_v1::ZcosmicToplevelManagerV1, ()> for AppState {
     fn event(
         _app_data: &mut AppState,
-        _workspace: &zcosmic_toplevel_manager_v1::ZcosmicToplevelManagerV1,
-        _event: zcosmic_toplevel_manager_v1::Event,
+        proxy: &zcosmic_toplevel_manager_v1::ZcosmicToplevelManagerV1,
+        event: zcosmic_toplevel_manager_v1::Event,
         _: &(),
         _: &Connection,
         _: &QueueHandle<Self>,
     ) {
+        tracing::debug!(event = ?event, proxy = ?proxy, "ZcosmicToplevelManagerV1");
     }
 }
 
 impl Dispatch<zcosmic_toplevel_info_v1::ZcosmicToplevelInfoV1, ()> for AppState {
     fn event(
         app_data: &mut Self,
-        _info: &zcosmic_toplevel_info_v1::ZcosmicToplevelInfoV1,
+        proxy: &zcosmic_toplevel_info_v1::ZcosmicToplevelInfoV1,
         event: zcosmic_toplevel_info_v1::Event,
         _: &(),
         _: &Connection,
         _: &QueueHandle<AppState>,
     ) {
+        tracing::debug!(event = ?event, proxy = ?proxy, "ZcosmicToplevelInfoV1");
         if let zcosmic_toplevel_info_v1::Event::Toplevel { toplevel } = event {
             app_data.apps.push(App {
                 handle: toplevel,
                 title: None,
                 app_id: None,
                 outputs: Vec::new(),
-                // workspaces: Vec::new(),
+                workspaces: Vec::new(),
                 state: Vec::new(),
             })
         }
@@ -234,120 +341,105 @@ impl Dispatch<zcosmic_toplevel_handle_v1::ZcosmicToplevelHandleV1, ()> for AppSt
         _: &Connection,
         _: &QueueHandle<AppState>,
     ) {
+        tracing::debug!(event = ?event, proxy = ?toplevel, "ZcosmicToplevelHandleV1");
+        let Some(info) = app_data.apps.iter_mut().find(|t| &t.handle == toplevel) else {
+            return;
+        };
         match event {
             zcosmic_toplevel_handle_v1::Event::Title { title } => {
-                if let Some(info) = app_data.apps.iter_mut().find(|t| &t.handle == toplevel) {
-                    info.title = Some(title);
-                }
+                info.title = Some(title);
             }
             zcosmic_toplevel_handle_v1::Event::AppId { app_id } => {
-                if let Some(info) = app_data.apps.iter_mut().find(|t| &t.handle == toplevel) {
-                    info.app_id = Some(app_id);
-                }
+                info.app_id = Some(app_id);
             }
             zcosmic_toplevel_handle_v1::Event::OutputEnter { output } => {
-                if let Some(info) = app_data.apps.iter_mut().find(|t| &t.handle == toplevel) {
-                    info.outputs.push(output);
-                }
+                info.outputs.push(output.id());
             }
-            // zcosmic_toplevel_handle_v1::Event::OutputLeave { output } => {
-            //     if let Some(info) = app_data
-            //         .toplevels
-            //         .iter_mut()
-            //         .find(|t| &t.handle == toplevel)
-            //     {
-            //         info.outputs.retain(|o| o != &output);
-            //     }
-            // }
+            zcosmic_toplevel_handle_v1::Event::OutputLeave { output } => {
+                let output_id = output.id();
+                info.outputs.retain(|o| o != &output_id);
+            }
+            zcosmic_toplevel_handle_v1::Event::ExtWorkspaceEnter { workspace } => {
+                info.workspaces.push(workspace.id());
+            }
+            zcosmic_toplevel_handle_v1::Event::ExtWorkspaceLeave { workspace } => {
+                let workspace_id = workspace.id();
+                info.workspaces.retain(|w| w != &workspace_id);
+            }
             // zcosmic_toplevel_handle_v1::Event::WorkspaceEnter { workspace } => {
-            //     if let Some(info) = app_data
-            //         .toplevels
-            //         .iter_mut()
-            //         .find(|t| &t.handle == toplevel)
-            //     {
             //         info.workspaces.push(workspace);
-            //     }
             // }
             // zcosmic_toplevel_handle_v1::Event::WorkspaceLeave { workspace } => {
-            //     if let Some(info) = app_data
-            //         .toplevels
-            //         .iter_mut()
-            //         .find(|t| &t.handle == toplevel)
-            //     {
             //         info.workspaces.retain(|w| w != &workspace);
-            //     }
             // }
             zcosmic_toplevel_handle_v1::Event::State { state } => {
-                if let Some(info) = app_data.apps.iter_mut().find(|t| &t.handle == toplevel) {
-                    info.state = state
-                        .chunks_exact(4)
-                        .map(|chunk| u32::from_ne_bytes(chunk.try_into().unwrap()))
-                        .flat_map(|val| State::try_from(val).ok())
-                        .collect::<Vec<_>>();
-                }
+                info.state = state
+                    .chunks_exact(4)
+                    .map(|chunk| u32::from_ne_bytes(chunk.try_into().unwrap()))
+                    .flat_map(|val| State::try_from(val).ok())
+                    .collect::<Vec<_>>();
             }
             _ => {}
         }
     }
 }
 
-// impl Dispatch<zcosmic_workspace_manager_v1::ZcosmicWorkspaceManagerV1, ()> for AppState {
-//     fn event(
-//         _state: &mut Self,
-//         _proxy: &zcosmic_workspace_manager_v1::ZcosmicWorkspaceManagerV1,
-//         event: zcosmic_workspace_manager_v1::Event,
-//         _data: &(),
-//         _conn: &Connection,
-//         _qh: &QueueHandle<Self>,
-//     ) {
-//         println!("Event {event:?}");
-//     }
+impl Dispatch<zcosmic_workspace_manager_v1::ZcosmicWorkspaceManagerV1, ()> for AppState {
+    fn event(
+        _state: &mut Self,
+        proxy: &zcosmic_workspace_manager_v1::ZcosmicWorkspaceManagerV1,
+        event: zcosmic_workspace_manager_v1::Event,
+        _data: &(),
+        _conn: &Connection,
+        _qh: &QueueHandle<Self>,
+    ) {
+        tracing::debug!(event = ?event, proxy = ?proxy, "ZcosmicWorkspaceManagerV1");
+    }
 
-//     event_created_child!(
-//         AppState,
-//         zcosmic_workspace_manager_v1::ZcosmicWorkspaceManagerV1,
-//         [
-//             zcosmic_workspace_manager_v1::EVT_WORKSPACE_GROUP_OPCODE=> (zcosmic_workspace_group_handle_v1::ZcosmicWorkspaceGroupHandleV1, ()),
-//         ]
-//     );
-// }
+    event_created_child!(
+        AppState,
+        zcosmic_workspace_manager_v1::ZcosmicWorkspaceManagerV1,
+        [
+            zcosmic_workspace_manager_v1::EVT_WORKSPACE_GROUP_OPCODE => (zcosmic_workspace_group_handle_v1::ZcosmicWorkspaceGroupHandleV1, ()),
+        ]
+    );
+}
 
-// impl Dispatch<zcosmic_workspace_group_handle_v1::ZcosmicWorkspaceGroupHandleV1, ()> for AppState {
-//     fn event(
-//         _state: &mut Self,
-//         _proxy: &zcosmic_workspace_group_handle_v1::ZcosmicWorkspaceGroupHandleV1,
-//         event: zcosmic_workspace_group_handle_v1::Event,
-//         _data: &(),
-//         _conn: &Connection,
-//         _qh: &QueueHandle<Self>,
-//     ) {
-//         println!("Event {event:?}");
-//     }
-// }
+impl Dispatch<zcosmic_workspace_group_handle_v1::ZcosmicWorkspaceGroupHandleV1, ()> for AppState {
+    fn event(
+        _state: &mut Self,
+        proxy: &zcosmic_workspace_group_handle_v1::ZcosmicWorkspaceGroupHandleV1,
+        event: zcosmic_workspace_group_handle_v1::Event,
+        _data: &(),
+        _conn: &Connection,
+        _qh: &QueueHandle<Self>,
+    ) {
+        tracing::debug!(event = ?event, proxy = ?proxy, "ZcosmicWorkspaceGroupHandleV1");
+    }
+}
 
-// impl Dispatch<zcosmic_workspace_manager_v2::ZcosmicWorkspaceManagerV2, ()> for AppState {
-//     fn event(
-//         _state: &mut Self,
-//         _proxy: &zcosmic_workspace_manager_v2::ZcosmicWorkspaceManagerV2,
-//         event: zcosmic_workspace_manager_v2::Event,
-//         _data: &(),
-//         _conn: &Connection,
-//         _qh: &QueueHandle<Self>,
-//     ) {
-//         println!("Event {event:?}");
-//     }
+impl Dispatch<zcosmic_workspace_manager_v2::ZcosmicWorkspaceManagerV2, ()> for AppState {
+    fn event(
+        _state: &mut Self,
+        proxy: &zcosmic_workspace_manager_v2::ZcosmicWorkspaceManagerV2,
+        event: zcosmic_workspace_manager_v2::Event,
+        _data: &(),
+        _conn: &Connection,
+        _qh: &QueueHandle<Self>,
+    ) {
+        tracing::debug!(event = ?event, proxy = ?proxy, "ZcosmicWorkspaceManagerV2");
+    }
+}
 
-// }
-
-// impl Dispatch<zcosmic_workspace_handle_v2::ZcosmicWorkspaceHandleV2, ()> for AppState {
-//     fn event(
-//         _state: &mut Self,
-//         _proxy: &zcosmic_workspace_handle_v2::ZcosmicWorkspaceHandleV2,
-//         event: zcosmic_workspace_handle_v2::Event,
-//         _data: &(),
-//         _conn: &Connection,
-//         _qh: &QueueHandle<Self>,
-//     ) {
-//         println!("Event {event:?}");
-//     }
-// }
+impl Dispatch<zcosmic_workspace_handle_v2::ZcosmicWorkspaceHandleV2, ()> for AppState {
+    fn event(
+        _state: &mut Self,
+        proxy: &zcosmic_workspace_handle_v2::ZcosmicWorkspaceHandleV2,
+        event: zcosmic_workspace_handle_v2::Event,
+        _data: &(),
+        _conn: &Connection,
+        _qh: &QueueHandle<Self>,
+    ) {
+        tracing::debug!(event = ?event, proxy = ?proxy, "ZcosmicWorkspaceHandleV2");
+    }
+}
