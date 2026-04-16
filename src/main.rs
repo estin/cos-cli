@@ -345,7 +345,7 @@ impl AppFinderArgs for StateArgs {
 #[derive(Debug)]
 struct InfoArgs {
     json: bool,
-    wg_on_output: bool,
+    discover_wg_output: bool,
 }
 
 enum Command {
@@ -421,7 +421,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let command = match subcommand.as_deref() {
         Some("info") => Command::Info(InfoArgs {
             json: pargs.contains("--json"),
-            wg_on_output: pargs.contains("--wg-on-output"),
+            discover_wg_output: pargs.contains("--discover-wg-output"),
         }),
         Some("move") => {
             let app_id: Option<String> = pargs.opt_value_from_str(["-a", "--app-id"])?;
@@ -554,7 +554,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     });
             }
 
-            if args.wg_on_output {
+            if args.discover_wg_output {
                 let Some(manager) = state.cosmic_toplevel_manager.clone() else {
                     return Err(CliError::new(
                         "Compositor does not support workspace management protocol.".into(),
@@ -647,7 +647,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                             else {
                                 continue;
                             };
-                            wg.outputs.push(output_id.clone())
+                            if !wg.outputs.contains(&output_id) {
+                                wg.outputs.push(output_id.clone())
+                            }
                         } else {
                             tracing::debug!("App not changes output");
                         }
