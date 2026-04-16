@@ -4,6 +4,8 @@ A CLI tool for managing windows and workspaces on the COSMIC Desktop Environment
 
 > **Note:** This is a third-party, unofficial tool. It is not affiliated with System76 or the official COSMIC project.
 
+Related PR to pin app at workspace [feat: WindowRules Workspace Assignment](https://github.com/pop-os/cosmic-comp/pull/2214)
+
 ## Features
 - **List Information**: View active applications, workspaces, and outputs.
 - **Window Management**: Move applications between workspaces by their App ID.
