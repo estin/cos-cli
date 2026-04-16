@@ -218,9 +218,15 @@ struct JsonWorkspaceRef {
 }
 
 #[derive(Serialize)]
+struct JsonWorkspace {
+    index: usize,
+    name: String,
+}
+
+#[derive(Serialize)]
 struct JsonWorkspaceGroup {
     index: usize,
-    workspaces: Vec<String>,
+    workspaces: Vec<JsonWorkspace>,
     outputs: Vec<String>,
 }
 
@@ -747,6 +753,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                                 .handle_map
                                 .workspace_names(group)
                                 .map(ToOwned::to_owned)
+                                .enumerate()
+                                .map(|(index, name)| JsonWorkspace { index, name })
                                 .collect(),
                             outputs: group
                                 .outputs
