@@ -55,7 +55,9 @@ With `--json` option it will output all info in JSON format.
 ````console
 cos-cli info --json
 ````
-Example output:
+
+<details><summary>Example output:</summary>
+
 ````json
 {
   "apps": [
@@ -144,6 +146,8 @@ Example output:
   ]
 }
 ````
+
+</details>
 
 With `--discover-wg-output` it will discover which output each workspace group is on by moving an app across outputs. This is useful for populating the output information for workspace groups when the compositor does not provide it directly.
 ````console
