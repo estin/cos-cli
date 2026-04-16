@@ -41,7 +41,7 @@ Commands:
 Options for 'move':
   -a, --app-id <ID>             The Application ID (partial match, case-insensitive)
   -i, --index <INDEX>           The Application index from 'info' command
-  -w, --workspace <NAME>        The name of the target workspace
+  -w, --workspace <INDEX>       The index of the target workspace
   -g, --workspace-group <INDEX> The workspace group index from 'info' command (optional)
   -o, --output-index <INDEX>    The output index from 'info' command (optional)
   --wait <SECONDS>              Wait for the app to appear (optional, only for --app-id)

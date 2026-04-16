@@ -57,7 +57,77 @@ cos-cli info --json
 ````
 Example output:
 ````json
-{"apps":[{"index":0,"app_id":"firefox","title":"Gemini - Mozilla Firefox","state":["activated"]},{"index":1,"app_id":"org.wezfurlong.wezterm","title":"cos-cli","state":["maximized"]}],"workspaces":[{"index":0,"workspaces":[{"name":"1"},{"name":"2"},{"name":"3"}]}],"outputs":[{"index":0,"name":"eDP-1"}],"seats":[{"index":0,"name":"seat0"}]}
+{
+  "apps": [
+    {
+      "index": 0,
+      "app_id": "firefox",
+      "title": "Gemini - Mozilla Firefox",
+      "state": [],
+      "outputs": [
+        {
+          "index": 0,
+          "name": "HDMI-A-1"
+        }
+      ],
+      "workspaces": [
+        {
+          "group_index": 0,
+          "index": 0,
+          "workspace": "1"
+        }
+      ]
+    },
+    {
+      "index": 1,
+      "app_id": "org.wezfurlong.wezterm",
+      "title": "cos-cli",
+      "state": [
+        "activated"
+      ],
+      "outputs": [
+        {
+          "index": 0,
+          "name": "HDMI-A-1"
+        }
+      ],
+      "workspaces": [
+        {
+          "group_index": 0,
+          "index": 3,
+          "workspace": "4"
+        }
+      ]
+    }
+  ],
+  "workspace_groups": [
+    {
+      "index": 0,
+      "workspaces": [
+        "1",
+        "2",
+        "3",
+        "4",
+        "5"
+      ],
+      "outputs": [
+        "HDMI-A-1"
+      ]
+    }
+  ],
+  "outputs": [
+    {
+      "index": 0,
+      "name": "HDMI-A-1"
+    }
+  ],
+  "seats": [
+    {
+      "index": 0,
+      "name": "seat-0"
+    }
+  ]
+}
 ````
 
 With `--discover-wg-output` it will discover which output each workspace group is on by moving an app across outputs. This is useful for populating the output information for workspace groups when the compositor does not provide it directly.
@@ -80,8 +150,8 @@ Arguments:
     The Application ID (partial match, case-insensitive)
 *   `-i, --index <INDEX>`
     The Application index from 'info' command
-*   `-w, --workspace <NAME>`
-    The name of the target workspace
+*   `-w, --workspace <INDEX>`
+    The index of the target workspace
 *   `-g, --workspace-group <INDEX>`
     The workspace group index from 'info' command (optional)
 *   `-o, --output-index <INDEX>`
