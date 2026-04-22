@@ -15,6 +15,8 @@ use wayland_protocols::ext::workspace::v1::client::{
     ext_workspace_handle_v1,
 };
 
+use crate::server::Backend;
+
 mod dispatch;
 mod server;
 
@@ -250,6 +252,113 @@ struct JsonInfo {
     workspace_groups: Vec<JsonWorkspaceGroup>,
     outputs: Vec<JsonOutput>,
     seats: Vec<JsonSeat>,
+}
+
+impl From<&AppState> for JsonInfo {
+    fn from(state: &AppState) -> Self {
+        Self {
+            apps: state
+                .apps
+                .iter()
+                .enumerate()
+                .map(|(i, app)| {
+                    let outputs = app
+                        .outputs
+                        .iter()
+                        .filter_map(|o| {
+                            state.handle_map.output.get(o).and_then(|h| {
+                                JsonOutputRef {
+                                    index: state.outputs.iter().position(|oid| oid == o)?,
+                                    name: h.name.clone()?,
+                                }
+                                .into()
+                            })
+                        })
+                        .collect();
+                    let workspaces = app
+                        .workspaces
+                        .iter()
+                        .filter_map(|w| {
+                            Some(JsonWorkspaceRef {
+                                index: state
+                                    .workspace_groups
+                                    .iter()
+                                    .filter_map(|wg| wg.workspaces.iter().position(|i| i == w))
+                                    .next()?,
+                                group_index: state
+                                    .workspace_groups
+                                    .iter()
+                                    .position(|wg| wg.workspaces.contains(w))?,
+                                workspace: state
+                                    .handle_map
+                                    .workspace_handle
+                                    .get(w)
+                                    .and_then(|nh| nh.name.as_deref())
+                                    .unwrap_or("not found")
+                                    .to_string(),
+                            })
+                        })
+                        .collect();
+                    JsonApp {
+                        index: i,
+                        app_id: app.app_id.clone().unwrap_or_default(),
+                        title: app.title.clone().unwrap_or_default(),
+                        state: app.state.clone(),
+                        outputs,
+                        workspaces,
+                    }
+                })
+                .collect(),
+            workspace_groups: state
+                .workspace_groups
+                .iter()
+                .enumerate()
+                .map(|(i, group)| JsonWorkspaceGroup {
+                    index: i,
+                    workspaces: state
+                        .handle_map
+                        .workspace_names(group)
+                        .map(ToOwned::to_owned)
+                        .enumerate()
+                        .map(|(index, name)| JsonWorkspace { index, name })
+                        .collect(),
+                    outputs: group
+                        .outputs
+                        .iter()
+                        .filter_map(|oid| {
+                            state
+                                .handle_map
+                                .output
+                                .get(oid)
+                                .and_then(|h| h.name.clone())
+                        })
+                        .collect(),
+                })
+                .collect(),
+            outputs: state
+                .outputs
+                .iter()
+                .enumerate()
+                .filter_map(|(i, oid)| {
+                    state.handle_map.output.get(oid).map(|h| JsonOutput {
+                        index: i,
+                        name: h.name.clone().unwrap_or_default(),
+                    })
+                })
+                .collect(),
+            seats: state
+                .seats
+                .iter()
+                .enumerate()
+                .filter_map(|(i, sid)| {
+                    state.handle_map.seat.get(sid).map(|h| JsonSeat {
+                        index: i,
+                        name: h.name.clone().unwrap_or_default(),
+                    })
+                })
+                .collect(),
+        }
+    }
 }
 
 #[derive(Debug, PartialEq, Clone, Serialize, Deserialize)]
@@ -692,110 +801,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
 
             if args.json {
-                let json_info = JsonInfo {
-                    apps: state
-                        .apps
-                        .iter()
-                        .enumerate()
-                        .map(|(i, app)| {
-                            let outputs = app
-                                .outputs
-                                .iter()
-                                .filter_map(|o| {
-                                    state.handle_map.output.get(o).and_then(|h| {
-                                        JsonOutputRef {
-                                            index: state.outputs.iter().position(|oid| oid == o)?,
-                                            name: h.name.clone()?,
-                                        }
-                                        .into()
-                                    })
-                                })
-                                .collect();
-                            let workspaces = app
-                                .workspaces
-                                .iter()
-                                .filter_map(|w| {
-                                    Some(JsonWorkspaceRef {
-                                        index: state
-                                            .workspace_groups
-                                            .iter()
-                                            .filter_map(|wg| {
-                                                wg.workspaces.iter().position(|i| i == w)
-                                            })
-                                            .next()?,
-                                        group_index: state
-                                            .workspace_groups
-                                            .iter()
-                                            .position(|wg| wg.workspaces.contains(w))?,
-                                        workspace: state
-                                            .handle_map
-                                            .workspace_handle
-                                            .get(w)
-                                            .and_then(|nh| nh.name.as_deref())
-                                            .unwrap_or("not found")
-                                            .to_string(),
-                                    })
-                                })
-                                .collect();
-                            JsonApp {
-                                index: i,
-                                app_id: app.app_id.clone().unwrap_or_default(),
-                                title: app.title.clone().unwrap_or_default(),
-                                state: app.state.clone(),
-                                outputs,
-                                workspaces,
-                            }
-                        })
-                        .collect(),
-                    workspace_groups: state
-                        .workspace_groups
-                        .iter()
-                        .enumerate()
-                        .map(|(i, group)| JsonWorkspaceGroup {
-                            index: i,
-                            workspaces: state
-                                .handle_map
-                                .workspace_names(group)
-                                .map(ToOwned::to_owned)
-                                .enumerate()
-                                .map(|(index, name)| JsonWorkspace { index, name })
-                                .collect(),
-                            outputs: group
-                                .outputs
-                                .iter()
-                                .filter_map(|oid| {
-                                    state
-                                        .handle_map
-                                        .output
-                                        .get(oid)
-                                        .and_then(|h| h.name.clone())
-                                })
-                                .collect(),
-                        })
-                        .collect(),
-                    outputs: state
-                        .outputs
-                        .iter()
-                        .enumerate()
-                        .filter_map(|(i, oid)| {
-                            state.handle_map.output.get(oid).map(|h| JsonOutput {
-                                index: i,
-                                name: h.name.clone().unwrap_or_default(),
-                            })
-                        })
-                        .collect(),
-                    seats: state
-                        .seats
-                        .iter()
-                        .enumerate()
-                        .filter_map(|(i, sid)| {
-                            state.handle_map.seat.get(sid).map(|h| JsonSeat {
-                                index: i,
-                                name: h.name.clone().unwrap_or_default(),
-                            })
-                        })
-                        .collect(),
-                };
+                let json_info = JsonInfo::from(&state);
                 println!("{}", serde_json::to_string(&json_info).unwrap());
             } else {
                 println!("Apps:");
@@ -1053,7 +1059,18 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             conn.flush()?;
         }
         Command::Serve => {
-            server::run()?;
+            let rt = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()?;
+            rt.block_on(async move {
+                server::run(Backend {
+                    connection: conn,
+                    event_queue,
+                    app_state: state,
+                })
+                .await?;
+                Ok::<_, Box<dyn std::error::Error>>(())
+            })?;
         }
     };
 
