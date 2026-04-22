@@ -16,6 +16,7 @@ use wayland_protocols::ext::workspace::v1::client::{
 };
 
 mod dispatch;
+mod server;
 
 fn init_tracing() {
     tracing_subscriber::fmt()
@@ -37,6 +38,7 @@ Commands:
   move                          Move an application to a specific workspace
   activate                      Activate an application on a specific seat
   state                         Set state of an application
+  serve                         Start a stdio JSON-RPC server
 
 Options for 'move':
   -a, --app-id <ID>             The Application ID (partial match, case-insensitive)
@@ -360,6 +362,7 @@ enum Command {
     Move(MoveArgs),
     Activate(ActivateArgs),
     State(StateArgs),
+    Serve,
 }
 
 fn find_apps<T: AppFinderArgs>(
@@ -508,6 +511,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
             Command::State(args)
         }
+        Some("serve") => Command::Serve,
         Some("help") | None => {
             println!("{HELP}");
             return Ok(());
@@ -1047,6 +1051,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
 
             conn.flush()?;
+        }
+        Command::Serve => {
+            server::run()?;
         }
     };
 
