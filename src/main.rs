@@ -176,6 +176,7 @@ struct AppState {
     outputs: Vec<ObjectId>,
     seats: Vec<ObjectId>,
     apps: Vec<App>,
+    watch: Option<tokio::sync::watch::Sender<Option<JsonInfo>>>,
 }
 
 impl AppState {
@@ -185,6 +186,16 @@ impl AppState {
 
     fn entities_count(&self) -> usize {
         self.outputs.len() + self.seats.len() + self.apps.len() + self.workspace_groups.len()
+    }
+    fn enable_notify(&mut self) -> tokio::sync::watch::Receiver<Option<JsonInfo>> {
+        let (tx, rx) = tokio::sync::watch::channel(None);
+        self.watch = tx.into();
+        rx
+    }
+    fn notify(&self) {
+        if let Some(tx) = &self.watch {
+            let _ = tx.send(JsonInfo::from(self).into());
+        }
     }
 }
 

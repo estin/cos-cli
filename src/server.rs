@@ -7,9 +7,7 @@ use tokio::sync::oneshot;
 
 use crate::AppState;
 
-use wayland_client::{
-    Connection, DispatchError, EventQueue,
-};
+use wayland_client::{Connection, DispatchError, EventQueue};
 
 pub struct Backend {
     pub connection: Connection,
@@ -68,12 +66,13 @@ impl Backend {
                         }
                     }
                     _ = tokio::time::sleep(sleep) => {
-                        core::future::poll_fn(|cx| self.event_queue.poll_dispatch_pending(cx, &mut self.app_state)).await?;
-                        self.connection.flush()?;
-                        // // TODO use async methods!!!
-                        // // this code will block the whole executor
-                        // self.event_queue.roundtrip(&mut self.app_state)?;
+                        // core::future::poll_fn(|cx| self.event_queue.poll_dispatch_pending(cx, &mut self.app_state)).await?;
                         // self.connection.flush()?;
+
+                        // TODO use async methods!!!
+                        // this code will block the whole executor
+                        self.event_queue.roundtrip(&mut self.app_state)?;
+                        self.connection.flush()?;
                     }
                 }
             }
@@ -82,10 +81,24 @@ impl Backend {
     }
 }
 
-pub async fn run(backend: Backend) -> Result<(), Box<dyn Error>> {
+pub async fn run(mut backend: Backend) -> Result<(), Box<dyn Error>> {
     let mut io = IoHandler::new();
 
+    let mut watch_rx = backend.app_state.enable_notify();
     let (_handle, request_tx) = backend.start()?;
+
+    let _handle = tokio::spawn(async move {
+        while let Ok(_) = watch_rx.changed().await {
+            let notification = serde_json::json!({
+                "jsonrpc": "2.0",
+                "method": "state_change",
+                "params": {
+                    "state": *watch_rx.borrow(),
+                }
+            });
+            println!("{}", notification);
+        }
+    });
 
     io.add_method("info", move |_params| {
         let request_tx_clone = request_tx.clone();
