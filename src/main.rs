@@ -11,8 +11,9 @@ use wayland_client::{
     protocol::{wl_output, wl_seat},
 };
 use wayland_protocols::ext::workspace::v1::client::{
-    // ext_workspace_group_handle_v1,
     ext_workspace_handle_v1,
+    // ext_workspace_group_handle_v1,
+    ext_workspace_manager_v1,
 };
 
 use crate::server::Backend;
@@ -39,6 +40,7 @@ Commands:
   info                          List active apps, workspaces, and outputs
   move                          Move an application to a specific workspace
   activate                      Activate an application on a specific seat
+  ws-activate                   Activate a workspace
   state                         Set state of an application
   serve                         Start a stdio JSON-RPC server
 
@@ -53,6 +55,10 @@ Options for 'move':
 Options for 'activate':
   -i, --index <INDEX>           The Application index from 'info' command
   -s, --seat <INDEX>            The Seat index from 'info' command (optional)
+
+Options for 'ws-activate':
+  -w, --workspace <INDEX>       The index of the workspace to activate
+  -g, --workspace-group <INDEX> The workspace group index from 'info' command (optional)
 
 Options for 'state':
   -a, --app-id <ID>             The Application ID (partial match, case-insensitive)
@@ -171,6 +177,7 @@ impl HandleMap {
 struct AppState {
     handle_map: HandleMap,
     cosmic_toplevel_manager: Option<zcosmic_toplevel_manager_v1::ZcosmicToplevelManagerV1>,
+    workspace_manager: Option<ext_workspace_manager_v1::ExtWorkspaceManagerV1>,
     available_interfaces: HashMap<String, Vec<(u32, u32)>>,
     workspace_groups: Vec<WorkspaceGroup>,
     outputs: Vec<ObjectId>,
@@ -423,6 +430,12 @@ struct ActivateArgs {
 }
 
 #[derive(Debug)]
+struct ActivateWsArgs {
+    workspace_index: usize,
+    workspace_group_index: Option<usize>,
+}
+
+#[derive(Debug)]
 struct StateArgs {
     app_id: Option<String>,
     app_index: Option<usize>,
@@ -481,6 +494,7 @@ enum Command {
     Info(InfoArgs),
     Move(MoveArgs),
     Activate(ActivateArgs),
+    ActivateWs(ActivateWsArgs),
     State(StateArgs),
     Serve,
 }
@@ -581,6 +595,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             app_index: pargs.value_from_str(["-i", "--index"])?,
             seat_index: pargs.opt_value_from_str(["-s", "--seat"])?,
         }),
+        Some("ws-activate") => {
+            let workspace_index: usize = pargs.value_from_str(["-w", "--workspace"])?;
+            let workspace_group_index: Option<usize> =
+                pargs.opt_value_from_str(["-g", "--workspace-group"])?;
+            Command::ActivateWs(ActivateWsArgs {
+                workspace_index,
+                workspace_group_index,
+            })
+        }
         Some("state") => {
             let app_id: Option<String> = pargs.opt_value_from_str(["-a", "--app-id"])?;
             let app_index: Option<usize> = pargs.opt_value_from_str(["-i", "--index"])?;
@@ -1030,6 +1053,55 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             };
             manager.activate(&app.handle, seat);
             conn.flush()?;
+        }
+        Command::ActivateWs(args) => {
+            let Some(manager) = &state.workspace_manager else {
+                return Err(CliError::new(
+                    "Compositor does not support workspace management protocol.".into(),
+                ));
+            };
+            let workspace_index = if let Some(group_index) = args.workspace_group_index {
+                let group = state.workspace_groups.get(group_index).ok_or_else(|| {
+                    CliError::new(format!("Workspace group not found: {}", group_index))
+                })?;
+                if args.workspace_index >= group.workspaces.len() {
+                    return Err(CliError::new(format!(
+                        "Workspace index {} out of range (group has {} workspaces)",
+                        args.workspace_index,
+                        group.workspaces.len()
+                    )));
+                }
+                (group_index, args.workspace_index)
+            } else {
+                let mut found = None;
+                for (gi, group) in state.workspace_groups.iter().enumerate() {
+                    for (wi, _) in group.workspaces.iter().enumerate() {
+                        if wi == args.workspace_index {
+                            found = Some((gi, wi));
+                            break;
+                        }
+                    }
+                    if found.is_some() {
+                        break;
+                    }
+                }
+                found.ok_or_else(|| {
+                    CliError::new(format!("Workspace not found: {}", args.workspace_index))
+                })?
+            };
+
+            let (group_index, idx) = workspace_index;
+            let workspace_handle = &state.workspace_groups[group_index].workspaces[idx];
+            let Some(ws) = state.handle_map.workspace_handle.get(workspace_handle) else {
+                return Err(CliError::new(
+                    "Workspace handle not found in handle map".into(),
+                ));
+            };
+
+            ws.handle.activate();
+            manager.commit();
+            conn.flush()?;
+            println!("Activated workspace {}", args.workspace_index);
         }
         Command::State(args) => {
             let apps_to_modify = find_apps(&mut state, &mut event_queue, &args)?;

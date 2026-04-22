@@ -191,6 +191,23 @@ Arguments:
 *   `-s, --seat <INDEX>`
     The Seat index from 'info' command (optional)
 
+#### `ws-activate`
+Activate a workspace.
+````console
+cos-cli ws-activate --workspace <INDEX>
+````
+Arguments:
+*   `-w, --workspace <INDEX>`
+    The index of the workspace to activate
+*   `-g, --workspace-group <INDEX>`
+    The workspace group index from 'info' command (optional)
+
+Example:
+````console
+cos-cli ws-activate -w 1
+cos-cli ws-activate -w 0 -g 1
+````
+
 #### `state`
 Set the state of an application's window (e.g., maximize, minimize, fullscreen, sticky).
 ````console
@@ -289,6 +306,24 @@ Set the state of an application.
   "id": 4
 }
 ````
+
+##### `ws_activate`
+Activate a workspace.
+
+````json
+{
+  "jsonrpc": "2.0",
+  "method": "ws_activate",
+  "params": {
+    "workspace": 1
+  },
+  "id": 5
+}
+````
+
+**Parameters:**
+- `workspace` (required): Workspace index to activate
+- `workspace_group` (optional): Workspace group index
 
 **Parameters:**
 - `app_id` (optional): Application ID (partial match, case-insensitive)

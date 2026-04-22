@@ -64,10 +64,18 @@ pub struct StateParams {
     pub unsticky: bool,
 }
 
+#[derive(Debug, Deserialize)]
+pub struct ActivateWsParams {
+    pub workspace: usize,
+    #[serde(default)]
+    pub workspace_group: Option<usize>,
+}
+
 pub enum BackendRequestParams {
     GetInfo,
     Move(MoveParams),
     Activate(ActivateParams),
+    ActivateWs(ActivateWsParams),
     State(StateParams),
 }
 
@@ -138,6 +146,16 @@ impl Backend {
                             }
                             BackendRequestParams::Activate(params) => {
                                 match self.handle_activate(params).await {
+                                    Ok(msg) => {
+                                        let _ = request.response_tx.send(BackendResponse::Ok(msg));
+                                    }
+                                    Err(e) => {
+                                        let _ = request.response_tx.send(BackendResponse::Err(e.to_string()));
+                                    }
+                                }
+                            }
+                            BackendRequestParams::ActivateWs(params) => {
+                                match self.handle_activate_ws(params).await {
                                     Ok(msg) => {
                                         let _ = request.response_tx.send(BackendResponse::Ok(msg));
                                     }
@@ -234,7 +252,7 @@ impl Backend {
                 .output
                 .get(oid)
                 .map(|h| h.handle.clone())
-                .ok_or_else(|| "Output handle not found in handle map")?
+                .ok_or("Output handle not found in handle map")?
         } else {
             if self.app_state.outputs.is_empty() {
                 return Err("No outputs found.".to_string().into());
@@ -245,7 +263,7 @@ impl Backend {
                 .output
                 .get(oid)
                 .map(|h| h.handle.clone())
-                .ok_or_else(|| "Output handle not found in handle map")?
+                .ok_or("Output handle not found in handle map")?
         };
 
         for app in &apps {
@@ -284,7 +302,7 @@ impl Backend {
                 .seat
                 .get(sid)
                 .map(|h| &h.handle)
-                .ok_or_else(|| "Seat handle not found in handle map")?
+                .ok_or("Seat handle not found in handle map")?
         } else {
             let sid = self
                 .app_state
@@ -296,13 +314,69 @@ impl Backend {
                 .seat
                 .get(sid)
                 .map(|h| &h.handle)
-                .ok_or_else(|| "Seat handle not found in handle map")?
+                .ok_or("Seat handle not found in handle map")?
         };
 
         manager.activate(&app.handle, seat);
         self.connection.flush()?;
 
         Ok(format!("Activated app at index {}", params.index))
+    }
+
+    async fn handle_activate_ws(
+        &mut self,
+        params: ActivateWsParams,
+    ) -> Result<String, Box<dyn StdError>> {
+        let Some(manager) = &self.app_state.workspace_manager else {
+            return Err("Compositor does not support workspace management protocol.".into());
+        };
+        let workspace_index = if let Some(group_index) = params.workspace_group {
+            let group = self
+                .app_state
+                .workspace_groups
+                .get(group_index)
+                .ok_or_else(|| format!("Workspace group not found: {}", group_index))?;
+            if params.workspace >= group.workspaces.len() {
+                return Err(format!(
+                    "Workspace index {} out of range (group has {} workspaces)",
+                    params.workspace,
+                    group.workspaces.len()
+                )
+                .into());
+            }
+            (group_index, params.workspace)
+        } else {
+            let mut found = None;
+            for (gi, group) in self.app_state.workspace_groups.iter().enumerate() {
+                for (wi, _) in group.workspaces.iter().enumerate() {
+                    if wi == params.workspace {
+                        found = Some((gi, wi));
+                        break;
+                    }
+                }
+                if found.is_some() {
+                    break;
+                }
+            }
+            found.ok_or_else(|| format!("Workspace not found: {}", params.workspace))?
+        };
+
+        let (group_index, idx) = workspace_index;
+        let workspace_handle = &self.app_state.workspace_groups[group_index].workspaces[idx];
+        let Some(ws) = self
+            .app_state
+            .handle_map
+            .workspace_handle
+            .get(workspace_handle)
+        else {
+            return Err("Workspace handle not found in handle map".into());
+        };
+
+        ws.handle.activate();
+        manager.commit();
+        self.connection.flush()?;
+
+        Ok(format!("Activated workspace {}", params.workspace))
     }
 
     async fn handle_state(&mut self, params: StateParams) -> Result<String, Box<dyn StdError>> {
@@ -385,9 +459,9 @@ impl Backend {
     ) -> Result<Vec<crate::App>, Box<dyn StdError>> {
         if let Some(index) = app_index {
             if let Some(app) = self.app_state.apps.get(index) {
-                return Ok(vec![app.clone()]);
+                Ok(vec![app.clone()])
             } else {
-                return Err(format!("App index not found: {}", index).into());
+                Err(format!("App index not found: {}", index).into())
             }
         } else if let Some(id) = app_id {
             let sleep = tokio::time::Duration::from_millis(500);
@@ -466,7 +540,7 @@ pub async fn run(mut backend: Backend) -> Result<(), Box<dyn StdError>> {
     let server_handler = Arc::new(ServerHandler::new(request_tx));
 
     let _handle = tokio::spawn(async move {
-        while let Ok(_) = watch_rx.changed().await {
+        while watch_rx.changed().await.is_ok() {
             let notification = serde_json::json!({
                 "jsonrpc": "2.0",
                 "method": "state_change",
@@ -520,6 +594,19 @@ pub async fn run(mut backend: Backend) -> Result<(), Box<dyn StdError>> {
                 params.parse().map_err(|e| error_response(&e.to_string()))?;
             handler
                 .handle_request(BackendRequestParams::State(state_params))
+                .await
+        }
+        .boxed()
+    });
+
+    let handler_ws = server_handler.clone();
+    io.add_method("ws_activate", move |params: Params| {
+        let handler = handler_ws.clone();
+        async move {
+            let ws_params: ActivateWsParams =
+                params.parse().map_err(|e| error_response(&e.to_string()))?;
+            handler
+                .handle_request(BackendRequestParams::ActivateWs(ws_params))
                 .await
         }
         .boxed()

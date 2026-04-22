@@ -25,12 +25,14 @@ pub fn bind(proxy: &wl_registry::WlRegistry, qh: &QueueHandle<AppState>, state: 
     if let Some(items) = state.available_interfaces.get("ext_workspace_manager_v1") {
         for (name, version) in items {
             tracing::debug!("Bind ext_workspace_manager_v1 name: {name} version: {version}");
-            proxy.bind::<ext_workspace_manager_v1::ExtWorkspaceManagerV1, _, _>(
-                *name,
-                *version,
-                qh,
-                (),
-            );
+            state.workspace_manager = proxy
+                .bind::<ext_workspace_manager_v1::ExtWorkspaceManagerV1, _, _>(
+                    *name,
+                    *version,
+                    qh,
+                    (),
+                )
+                .into();
         }
     }
     if let Some(items) = state
