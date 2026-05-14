@@ -11,11 +11,15 @@ use wayland_client::{
     protocol::{wl_output, wl_seat},
 };
 use wayland_protocols::ext::workspace::v1::client::{
-    // ext_workspace_group_handle_v1,
     ext_workspace_handle_v1,
+    // ext_workspace_group_handle_v1,
+    ext_workspace_manager_v1,
 };
 
+use crate::server::Backend;
+
 mod dispatch;
+mod server;
 
 fn init_tracing() {
     tracing_subscriber::fmt()
@@ -36,7 +40,9 @@ Commands:
   info                          List active apps, workspaces, and outputs
   move                          Move an application to a specific workspace
   activate                      Activate an application on a specific seat
+  ws-activate                   Activate a workspace
   state                         Set state of an application
+  serve                         Start a stdio JSON-RPC server
   close                         Close an application
 
 Options for 'move':
@@ -47,14 +53,9 @@ Options for 'move':
   -o, --output-index <INDEX>    The output index from 'info' command (optional)
   --wait <SECONDS>              Wait for the app to appear (optional, only for --app-id)
 
-Options for 'activate':
-  -i, --index <INDEX>           The Application index from 'info' command
-  -s, --seat <INDEX>            The Seat index from 'info' command (optional)
-
 Options for 'state':
   -a, --app-id <ID>             The Application ID (partial match, case-insensitive)
   -i, --index <INDEX>           The Application index from 'info' command
-  --wait <SECONDS>              Wait for the app to appear (optional, only for --app-id)
   --maximize
   --unmaximize
   --minimize
@@ -67,7 +68,6 @@ Options for 'state':
 Options for 'close':
   -a, --app-id <ID>             The Application ID (partial match, case-insensitive)
   -i, --index <INDEX>           The Application index from 'info' command
-  --wait <SECONDS>              Wait for the app to appear (optional, only for --app-id)
 
 Options for 'info':
   --json                        Output in JSON format
@@ -88,7 +88,7 @@ Examples:
   cos-cli state --app-id firefox --sticky --fullscreen
   cos-cli close -i 0
   cos-cli close --app-id firefox
-  cos-cli close -a terminal --wait 5
+  cos-cli close -a terminal
 ";
 
 struct CliError(String);
@@ -176,11 +176,13 @@ impl HandleMap {
 struct AppState {
     handle_map: HandleMap,
     cosmic_toplevel_manager: Option<zcosmic_toplevel_manager_v1::ZcosmicToplevelManagerV1>,
+    workspace_manager: Option<ext_workspace_manager_v1::ExtWorkspaceManagerV1>,
     available_interfaces: HashMap<String, Vec<(u32, u32)>>,
     workspace_groups: Vec<WorkspaceGroup>,
     outputs: Vec<ObjectId>,
     seats: Vec<ObjectId>,
     apps: Vec<App>,
+    watch: Option<tokio::sync::watch::Sender<Option<JsonInfo>>>,
 }
 
 impl AppState {
@@ -190,6 +192,16 @@ impl AppState {
 
     fn entities_count(&self) -> usize {
         self.outputs.len() + self.seats.len() + self.apps.len() + self.workspace_groups.len()
+    }
+    fn enable_notify(&mut self) -> tokio::sync::watch::Receiver<Option<JsonInfo>> {
+        let (tx, rx) = tokio::sync::watch::channel(None);
+        self.watch = tx.into();
+        rx
+    }
+    fn notify(&self) {
+        if let Some(tx) = &self.watch {
+            let _ = tx.send(JsonInfo::from(self).into());
+        }
     }
 }
 
@@ -259,6 +271,113 @@ struct JsonInfo {
     seats: Vec<JsonSeat>,
 }
 
+impl From<&AppState> for JsonInfo {
+    fn from(state: &AppState) -> Self {
+        Self {
+            apps: state
+                .apps
+                .iter()
+                .enumerate()
+                .map(|(i, app)| {
+                    let outputs = app
+                        .outputs
+                        .iter()
+                        .filter_map(|o| {
+                            state.handle_map.output.get(o).and_then(|h| {
+                                JsonOutputRef {
+                                    index: state.outputs.iter().position(|oid| oid == o)?,
+                                    name: h.name.clone()?,
+                                }
+                                .into()
+                            })
+                        })
+                        .collect();
+                    let workspaces = app
+                        .workspaces
+                        .iter()
+                        .filter_map(|w| {
+                            Some(JsonWorkspaceRef {
+                                index: state
+                                    .workspace_groups
+                                    .iter()
+                                    .filter_map(|wg| wg.workspaces.iter().position(|i| i == w))
+                                    .next()?,
+                                group_index: state
+                                    .workspace_groups
+                                    .iter()
+                                    .position(|wg| wg.workspaces.contains(w))?,
+                                workspace: state
+                                    .handle_map
+                                    .workspace_handle
+                                    .get(w)
+                                    .and_then(|nh| nh.name.as_deref())
+                                    .unwrap_or("not found")
+                                    .to_string(),
+                            })
+                        })
+                        .collect();
+                    JsonApp {
+                        index: i,
+                        app_id: app.app_id.clone().unwrap_or_default(),
+                        title: app.title.clone().unwrap_or_default(),
+                        state: app.state.clone(),
+                        outputs,
+                        workspaces,
+                    }
+                })
+                .collect(),
+            workspace_groups: state
+                .workspace_groups
+                .iter()
+                .enumerate()
+                .map(|(i, group)| JsonWorkspaceGroup {
+                    index: i,
+                    workspaces: state
+                        .handle_map
+                        .workspace_names(group)
+                        .map(ToOwned::to_owned)
+                        .enumerate()
+                        .map(|(index, name)| JsonWorkspace { index, name })
+                        .collect(),
+                    outputs: group
+                        .outputs
+                        .iter()
+                        .filter_map(|oid| {
+                            state
+                                .handle_map
+                                .output
+                                .get(oid)
+                                .and_then(|h| h.name.clone())
+                        })
+                        .collect(),
+                })
+                .collect(),
+            outputs: state
+                .outputs
+                .iter()
+                .enumerate()
+                .filter_map(|(i, oid)| {
+                    state.handle_map.output.get(oid).map(|h| JsonOutput {
+                        index: i,
+                        name: h.name.clone().unwrap_or_default(),
+                    })
+                })
+                .collect(),
+            seats: state
+                .seats
+                .iter()
+                .enumerate()
+                .filter_map(|(i, sid)| {
+                    state.handle_map.seat.get(sid).map(|h| JsonSeat {
+                        index: i,
+                        name: h.name.clone().unwrap_or_default(),
+                    })
+                })
+                .collect(),
+        }
+    }
+}
+
 #[derive(Debug, PartialEq, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum State {
@@ -310,6 +429,12 @@ struct ActivateArgs {
 }
 
 #[derive(Debug)]
+struct ActivateWsArgs {
+    workspace_index: usize,
+    workspace_group_index: Option<usize>,
+}
+
+#[derive(Debug)]
 struct StateArgs {
     app_id: Option<String>,
     app_index: Option<usize>,
@@ -328,7 +453,6 @@ struct StateArgs {
 struct CloseArgs {
     app_id: Option<String>,
     app_index: Option<usize>,
-    wait: Option<u64>,
 }
 
 trait AppFinderArgs {
@@ -375,7 +499,7 @@ impl AppFinderArgs for CloseArgs {
     }
 
     fn wait(&self) -> Option<u64> {
-        self.wait
+        None
     }
 }
 
@@ -389,7 +513,9 @@ enum Command {
     Info(InfoArgs),
     Move(MoveArgs),
     Activate(ActivateArgs),
+    ActivateWs(ActivateWsArgs),
     State(StateArgs),
+    Serve,
     Close(CloseArgs),
 }
 
@@ -445,6 +571,35 @@ fn find_apps<T: AppFinderArgs>(
     }
 }
 
+fn discover() -> Result<(Connection, EventQueue<AppState>, AppState), Box<dyn std::error::Error>> {
+    let conn = Connection::connect_to_env()?;
+    let mut event_queue = conn.new_event_queue();
+    let qh = event_queue.handle();
+
+    let mut state = AppState::new();
+    let registry = conn.display().get_registry(&qh, ());
+
+    event_queue.roundtrip(&mut state)?;
+    dispatch::bind(&registry, &qh, &mut state);
+    event_queue.roundtrip(&mut state)?;
+    tracing::debug!("Discovered {}", state.entities_count(),);
+
+    let mut entities_count = 0;
+    for i in 0..10 {
+        event_queue.roundtrip(&mut state)?;
+        std::thread::sleep(std::time::Duration::from_millis(100));
+        let new_entities_count = state.entities_count();
+        tracing::debug!("Step {i}. Discovered {new_entities_count} (previous: {entities_count})");
+
+        if new_entities_count == entities_count {
+            break;
+        }
+        entities_count = new_entities_count;
+    }
+
+    Ok((conn, event_queue, state))
+}
+
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     init_tracing();
     const VERSION: &str = env!("CARGO_PKG_VERSION");
@@ -489,6 +644,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             app_index: pargs.value_from_str(["-i", "--index"])?,
             seat_index: pargs.opt_value_from_str(["-s", "--seat"])?,
         }),
+        Some("ws-activate") => {
+            let workspace_index: usize = pargs.value_from_str(["-w", "--workspace"])?;
+            let workspace_group_index: Option<usize> =
+                pargs.opt_value_from_str(["-g", "--workspace-group"])?;
+            Command::ActivateWs(ActivateWsArgs {
+                workspace_index,
+                workspace_group_index,
+            })
+        }
         Some("state") => {
             let app_id: Option<String> = pargs.opt_value_from_str(["-a", "--app-id"])?;
             let app_index: Option<usize> = pargs.opt_value_from_str(["-i", "--index"])?;
@@ -539,6 +703,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
             Command::State(args)
         }
+        Some("serve") => Command::Serve,
         Some("close") => {
             let app_id: Option<String> = pargs.opt_value_from_str(["-a", "--app-id"])?;
             let app_index: Option<usize> = pargs.opt_value_from_str(["-i", "--index"])?;
@@ -554,11 +719,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 ));
             }
 
-            Command::Close(CloseArgs {
-                app_id,
-                app_index,
-                wait: pargs.opt_value_from_fn("--wait", |v| v.parse())?,
-            })
+            Command::Close(CloseArgs { app_id, app_index })
         }
         Some("help") | None => {
             println!("{HELP}");
@@ -572,30 +733,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     };
 
-    let conn = Connection::connect_to_env()?;
-    let mut event_queue = conn.new_event_queue();
-    let qh = event_queue.handle();
-
-    let mut state = AppState::new();
-    let registry = conn.display().get_registry(&qh, ());
-
-    event_queue.roundtrip(&mut state)?;
-    dispatch::bind(&registry, &qh, &mut state);
-    event_queue.roundtrip(&mut state)?;
-    tracing::debug!("Discovered {}", state.entities_count(),);
-
-    let mut entities_count = 0;
-    for i in 0..10 {
-        event_queue.roundtrip(&mut state)?;
-        std::thread::sleep(std::time::Duration::from_millis(100));
-        let new_entities_count = state.entities_count();
-        tracing::debug!("Step {i}. Discovered {new_entities_count} (previous: {entities_count})");
-
-        if new_entities_count == entities_count {
-            break;
-        }
-        entities_count = new_entities_count;
-    }
+    let (conn, mut event_queue, mut state) = discover()?;
 
     match command {
         Command::Info(args) => {
@@ -740,110 +878,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
 
             if args.json {
-                let json_info = JsonInfo {
-                    apps: state
-                        .apps
-                        .iter()
-                        .enumerate()
-                        .map(|(i, app)| {
-                            let outputs = app
-                                .outputs
-                                .iter()
-                                .filter_map(|o| {
-                                    state.handle_map.output.get(o).and_then(|h| {
-                                        JsonOutputRef {
-                                            index: state.outputs.iter().position(|oid| oid == o)?,
-                                            name: h.name.clone()?,
-                                        }
-                                        .into()
-                                    })
-                                })
-                                .collect();
-                            let workspaces = app
-                                .workspaces
-                                .iter()
-                                .filter_map(|w| {
-                                    Some(JsonWorkspaceRef {
-                                        index: state
-                                            .workspace_groups
-                                            .iter()
-                                            .filter_map(|wg| {
-                                                wg.workspaces.iter().position(|i| i == w)
-                                            })
-                                            .next()?,
-                                        group_index: state
-                                            .workspace_groups
-                                            .iter()
-                                            .position(|wg| wg.workspaces.contains(w))?,
-                                        workspace: state
-                                            .handle_map
-                                            .workspace_handle
-                                            .get(w)
-                                            .and_then(|nh| nh.name.as_deref())
-                                            .unwrap_or("not found")
-                                            .to_string(),
-                                    })
-                                })
-                                .collect();
-                            JsonApp {
-                                index: i,
-                                app_id: app.app_id.clone().unwrap_or_default(),
-                                title: app.title.clone().unwrap_or_default(),
-                                state: app.state.clone(),
-                                outputs,
-                                workspaces,
-                            }
-                        })
-                        .collect(),
-                    workspace_groups: state
-                        .workspace_groups
-                        .iter()
-                        .enumerate()
-                        .map(|(i, group)| JsonWorkspaceGroup {
-                            index: i,
-                            workspaces: state
-                                .handle_map
-                                .workspace_names(group)
-                                .map(ToOwned::to_owned)
-                                .enumerate()
-                                .map(|(index, name)| JsonWorkspace { index, name })
-                                .collect(),
-                            outputs: group
-                                .outputs
-                                .iter()
-                                .filter_map(|oid| {
-                                    state
-                                        .handle_map
-                                        .output
-                                        .get(oid)
-                                        .and_then(|h| h.name.clone())
-                                })
-                                .collect(),
-                        })
-                        .collect(),
-                    outputs: state
-                        .outputs
-                        .iter()
-                        .enumerate()
-                        .filter_map(|(i, oid)| {
-                            state.handle_map.output.get(oid).map(|h| JsonOutput {
-                                index: i,
-                                name: h.name.clone().unwrap_or_default(),
-                            })
-                        })
-                        .collect(),
-                    seats: state
-                        .seats
-                        .iter()
-                        .enumerate()
-                        .filter_map(|(i, sid)| {
-                            state.handle_map.seat.get(sid).map(|h| JsonSeat {
-                                index: i,
-                                name: h.name.clone().unwrap_or_default(),
-                            })
-                        })
-                        .collect(),
-                };
+                let json_info = JsonInfo::from(&state);
                 println!("{}", serde_json::to_string(&json_info).unwrap());
             } else {
                 println!("Apps:");
@@ -1062,6 +1097,55 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             manager.activate(&app.handle, seat);
             conn.flush()?;
         }
+        Command::ActivateWs(args) => {
+            let Some(manager) = &state.workspace_manager else {
+                return Err(CliError::new(
+                    "Compositor does not support workspace management protocol.".into(),
+                ));
+            };
+            let workspace_index = if let Some(group_index) = args.workspace_group_index {
+                let group = state.workspace_groups.get(group_index).ok_or_else(|| {
+                    CliError::new(format!("Workspace group not found: {}", group_index))
+                })?;
+                if args.workspace_index >= group.workspaces.len() {
+                    return Err(CliError::new(format!(
+                        "Workspace index {} out of range (group has {} workspaces)",
+                        args.workspace_index,
+                        group.workspaces.len()
+                    )));
+                }
+                (group_index, args.workspace_index)
+            } else {
+                let mut found = None;
+                for (gi, group) in state.workspace_groups.iter().enumerate() {
+                    for (wi, _) in group.workspaces.iter().enumerate() {
+                        if wi == args.workspace_index {
+                            found = Some((gi, wi));
+                            break;
+                        }
+                    }
+                    if found.is_some() {
+                        break;
+                    }
+                }
+                found.ok_or_else(|| {
+                    CliError::new(format!("Workspace not found: {}", args.workspace_index))
+                })?
+            };
+
+            let (group_index, idx) = workspace_index;
+            let workspace_handle = &state.workspace_groups[group_index].workspaces[idx];
+            let Some(ws) = state.handle_map.workspace_handle.get(workspace_handle) else {
+                return Err(CliError::new(
+                    "Workspace handle not found in handle map".into(),
+                ));
+            };
+
+            ws.handle.activate();
+            manager.commit();
+            conn.flush()?;
+            println!("Activated workspace {}", args.workspace_index);
+        }
         Command::State(args) => {
             let apps_to_modify = find_apps(&mut state, &mut event_queue, &args)?;
 
@@ -1100,6 +1184,20 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
             conn.flush()?;
         }
+        Command::Serve => {
+            let rt = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()?;
+            rt.block_on(async move {
+                server::run(Backend {
+                    connection: conn,
+                    event_queue,
+                    app_state: state,
+                })
+                .await?;
+                Ok::<_, Box<dyn std::error::Error>>(())
+            })?;
+        }
         Command::Close(args) => {
             let apps_to_close = find_apps(&mut state, &mut event_queue, &args)?;
 
@@ -1109,7 +1207,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 ));
             };
 
-            let app_count = apps_to_close.len();
             for app in &apps_to_close {
                 tracing::debug!(
                     "Sending close request for: {}",
@@ -1119,25 +1216,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
 
             conn.flush()?;
-
             event_queue.roundtrip(&mut state)?;
-
-            let remaining = state
-                .apps
-                .iter()
-                .filter(|a| apps_to_close.iter().any(|c| c.handle == a.handle))
-                .count();
-            if remaining == 0 && app_count > 0 {
-                tracing::debug!("All {} app(s) closed successfully", app_count);
-            } else if remaining < app_count {
-                tracing::debug!(
-                    "{}/{} app(s) closed",
-                    app_count - remaining,
-                    app_count
-                );
-            } else {
-                tracing::warn!("App(s) still present after close request. The compositor may not support closing or the app may have refused.");
-            }
         }
     };
 

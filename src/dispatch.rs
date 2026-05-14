@@ -25,12 +25,14 @@ pub fn bind(proxy: &wl_registry::WlRegistry, qh: &QueueHandle<AppState>, state: 
     if let Some(items) = state.available_interfaces.get("ext_workspace_manager_v1") {
         for (name, version) in items {
             tracing::debug!("Bind ext_workspace_manager_v1 name: {name} version: {version}");
-            proxy.bind::<ext_workspace_manager_v1::ExtWorkspaceManagerV1, _, _>(
-                *name,
-                *version,
-                qh,
-                (),
-            );
+            state.workspace_manager = proxy
+                .bind::<ext_workspace_manager_v1::ExtWorkspaceManagerV1, _, _>(
+                    *name,
+                    *version,
+                    qh,
+                    (),
+                )
+                .into();
         }
     }
     if let Some(items) = state
@@ -137,6 +139,7 @@ impl Dispatch<wl_registry::WlRegistry, ()> for AppState {
                 .entry(interface.clone())
                 .and_modify(|items| items.push((name, version)))
                 .or_insert_with(|| vec![(name, version)]);
+            state.notify();
         }
     }
 }
@@ -159,6 +162,7 @@ impl Dispatch<wl_output::WlOutput, ()> for AppState {
                     NamedHandle::named(&name, output.to_owned()),
                 );
                 app_data.outputs.push(output_id);
+                app_data.notify();
             }
             wl_output::Event::Done => {}
             _ => {}
@@ -182,7 +186,8 @@ impl Dispatch<wl_seat::WlSeat, ()> for AppState {
                 .handle_map
                 .seat
                 .insert(id.clone(), NamedHandle::named(&name, seat.to_owned()));
-            app_data.seats.push(id)
+            app_data.seats.push(id);
+            app_data.notify();
         }
     }
 }
@@ -202,7 +207,8 @@ impl Dispatch<ext_workspace_manager_v1::ExtWorkspaceManagerV1, ()> for AppState 
                 object_id: workspace_group.id(),
                 workspaces: Vec::new(),
                 outputs: Vec::new(),
-            })
+            });
+            state.notify();
         }
     }
 
@@ -259,6 +265,7 @@ impl Dispatch<ext_workspace_handle_v1::ExtWorkspaceHandleV1, ()> for AppState {
                 .handle_map
                 .workspace_handle
                 .insert(proxy.id(), NamedHandle::named(&name, proxy.to_owned()));
+            state.notify();
         }
     }
 }
@@ -281,6 +288,7 @@ impl Dispatch<ext_workspace_group_handle_v1::ExtWorkspaceGroupHandleV1, ()> for 
                 .find(|g| g.object_id == id)
             {
                 group.workspaces.push(workspace.id());
+                state.notify();
             } else {
                 tracing::debug!("Workspace group not found")
             }
@@ -339,7 +347,8 @@ impl Dispatch<zcosmic_toplevel_info_v1::ZcosmicToplevelInfoV1, ()> for AppState 
                 outputs: Vec::new(),
                 workspaces: Vec::new(),
                 state: Vec::new(),
-            })
+            });
+            app_data.notify();
         }
     }
 
@@ -371,6 +380,7 @@ impl Dispatch<zcosmic_toplevel_handle_v1::ZcosmicToplevelHandleV1, ()> for AppSt
                 .unwrap_or_default();
             tracing::debug!("Toplevel closed by compositor: {}", app_id);
             app_data.apps.retain(|t| &t.handle != toplevel);
+            app_data.notify();
             return;
         }
         let Some(info) = app_data.apps.iter_mut().find(|t| &t.handle == toplevel) else {
@@ -379,23 +389,29 @@ impl Dispatch<zcosmic_toplevel_handle_v1::ZcosmicToplevelHandleV1, ()> for AppSt
         match event {
             zcosmic_toplevel_handle_v1::Event::Title { title } => {
                 info.title = Some(title);
+                app_data.notify();
             }
             zcosmic_toplevel_handle_v1::Event::AppId { app_id } => {
                 info.app_id = Some(app_id);
+                app_data.notify();
             }
             zcosmic_toplevel_handle_v1::Event::OutputEnter { output } => {
                 info.outputs.push(output.id());
+                app_data.notify();
             }
             zcosmic_toplevel_handle_v1::Event::OutputLeave { output } => {
                 let output_id = output.id();
                 info.outputs.retain(|o| o != &output_id);
+                app_data.notify();
             }
             zcosmic_toplevel_handle_v1::Event::ExtWorkspaceEnter { workspace } => {
                 info.workspaces.push(workspace.id());
+                app_data.notify();
             }
             zcosmic_toplevel_handle_v1::Event::ExtWorkspaceLeave { workspace } => {
                 let workspace_id = workspace.id();
                 info.workspaces.retain(|w| w != &workspace_id);
+                app_data.notify();
             }
             // zcosmic_toplevel_handle_v1::Event::WorkspaceEnter { workspace } => {
             //         info.workspaces.push(workspace);
@@ -409,6 +425,7 @@ impl Dispatch<zcosmic_toplevel_handle_v1::ZcosmicToplevelHandleV1, ()> for AppSt
                     .map(|chunk| u32::from_ne_bytes(chunk.try_into().unwrap()))
                     .flat_map(|val| State::try_from(val).ok())
                     .collect::<Vec<_>>();
+                app_data.notify();
             }
             _ => {}
         }

@@ -191,6 +191,23 @@ Arguments:
 *   `-s, --seat <INDEX>`
     The Seat index from 'info' command (optional)
 
+#### `ws-activate`
+Activate a workspace.
+````console
+cos-cli ws-activate --workspace <INDEX>
+````
+Arguments:
+*   `-w, --workspace <INDEX>`
+    The index of the workspace to activate
+*   `-g, --workspace-group <INDEX>`
+    The workspace group index from 'info' command (optional)
+
+Example:
+````console
+cos-cli ws-activate -w 1
+cos-cli ws-activate -w 0 -g 1
+````
+
 #### `state`
 Set the state of an application's window (e.g., maximize, minimize, fullscreen, sticky).
 ````console
@@ -225,4 +242,140 @@ Examples:
 cos-cli state -i 0 --maximize
 cos-cli state --app-id firefox --sticky --fullscreen --wait 5
 cos-cli state -i 1 --unminimize
+````
+
+#### `close`
+Close an application window by its App ID or index.
+````console
+cos-cli close --app-id <ID>
+````
+Arguments:
+*   `-a, --app-id <ID>`
+    The Application ID (partial match, case-insensitive)
+*   `-i, --index <INDEX>`
+    The Application index from 'info' command
+
+Examples:
+````console
+cos-cli close -i 0
+cos-cli close --app-id firefox
+cos-cli close -a terminal
+````
+
+#### JSON-RPC Stdio Server Mode
+
+Start the CLI as a JSON-RPC server using stdin/stdout for communication:
+
+````console
+cos-cli serve
+````
+
+The server reads JSON-RPC requests from stdin and writes responses to stdout. It also publishes notifications for state changes.
+
+**Methods:**
+
+##### `info`
+Returns current information about apps, workspaces, outputs, and seats.
+
+````console
+echo '{"jsonrpc": "2.0", "method": "info", "id": 1}' | cos-cli serve
+````
+
+##### `move`
+Move an application to a specific workspace.
+
+````json
+{
+  "jsonrpc": "2.0",
+  "method": "move",
+  "params": {
+    "app_id": "firefox",
+    "workspace": "1"
+  },
+  "id": 2
+}
+````
+
+##### `activate`
+Activate an application.
+
+````json
+{
+  "jsonrpc": "2.0",
+  "method": "activate",
+  "params": {
+    "index": 0
+  },
+  "id": 3
+}
+````
+
+##### `state`
+Set the state of an application.
+
+````json
+{
+  "jsonrpc": "2.0",
+  "method": "state",
+  "params": {
+    "index": 0,
+    "maximize": true
+  },
+  "id": 4
+}
+````
+
+##### `ws_activate`
+Activate a workspace.
+
+````json
+{
+  "jsonrpc": "2.0",
+  "method": "ws_activate",
+  "params": {
+    "workspace": 1
+  },
+  "id": 5
+}
+````
+
+##### `close`
+Close an application window.
+````json
+{
+  "jsonrpc": "2.0",
+  "method": "close",
+  "params": {
+    "app_id": "firefox"
+  },
+  "id": 6
+}
+````
+
+**Parameters:**
+- `workspace` (required): Workspace index to activate
+- `workspace_group` (optional): Workspace group index
+
+**Parameters:**
+- `app_id` (optional): Application ID (partial match, case-insensitive)
+- `index` (optional): Application index from `info` command
+- `workspace` (required for move): Target workspace index
+- `workspace_group` (optional): Workspace group index
+- `output_index` (optional): Output index
+- `seat` (optional): Seat index for activate
+- `wait` (optional): Wait for app to appear (seconds)
+- `maximize`, `unmaximize`, `minimize`, `unminimize`, `fullscreen`, `unfullscreen`, `sticky`, `unsticky` (optional): State flags
+
+**Notifications:**
+
+The server publishes `state_change` notifications when workspace or window state changes:
+
+````json
+{
+  "jsonrpc": "2.0",
+  "method": "state_change",
+  "params": {
+    "state": {...}
+  }
+}
 ````
