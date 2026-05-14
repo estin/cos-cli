@@ -53,18 +53,9 @@ Options for 'move':
   -o, --output-index <INDEX>    The output index from 'info' command (optional)
   --wait <SECONDS>              Wait for the app to appear (optional, only for --app-id)
 
-Options for 'activate':
-  -i, --index <INDEX>           The Application index from 'info' command
-  -s, --seat <INDEX>            The Seat index from 'info' command (optional)
-
-Options for 'ws-activate':
-  -w, --workspace <INDEX>       The index of the workspace to activate
-  -g, --workspace-group <INDEX> The workspace group index from 'info' command (optional)
-
 Options for 'state':
   -a, --app-id <ID>             The Application ID (partial match, case-insensitive)
   -i, --index <INDEX>           The Application index from 'info' command
-  --wait <SECONDS>              Wait for the app to appear (optional, only for --app-id)
   --maximize
   --unmaximize
   --minimize
@@ -77,7 +68,6 @@ Options for 'state':
 Options for 'close':
   -a, --app-id <ID>             The Application ID (partial match, case-insensitive)
   -i, --index <INDEX>           The Application index from 'info' command
-  --wait <SECONDS>              Wait for the app to appear (optional, only for --app-id)
 
 Options for 'info':
   --json                        Output in JSON format
@@ -98,7 +88,7 @@ Examples:
   cos-cli state --app-id firefox --sticky --fullscreen
   cos-cli close -i 0
   cos-cli close --app-id firefox
-  cos-cli close -a terminal --wait 5
+  cos-cli close -a terminal
 ";
 
 struct CliError(String);
@@ -463,7 +453,6 @@ struct StateArgs {
 struct CloseArgs {
     app_id: Option<String>,
     app_index: Option<usize>,
-    wait: Option<u64>,
 }
 
 trait AppFinderArgs {
@@ -510,7 +499,7 @@ impl AppFinderArgs for CloseArgs {
     }
 
     fn wait(&self) -> Option<u64> {
-        self.wait
+        None
     }
 }
 
@@ -730,11 +719,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 ));
             }
 
-            Command::Close(CloseArgs {
-                app_id,
-                app_index,
-                wait: pargs.opt_value_from_fn("--wait", |v| v.parse())?,
-            })
+            Command::Close(CloseArgs { app_id, app_index })
         }
         Some("help") | None => {
             println!("{HELP}");
@@ -1223,15 +1208,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             };
 
             for app in &apps_to_close {
-                println!(
+                tracing::debug!(
                     "Sending close request for: {}",
                     app.app_id.as_deref().unwrap_or("unknown")
                 );
                 manager.close(&app.handle);
             }
 
-            event_queue.roundtrip(&mut state)?;
             conn.flush()?;
+            event_queue.roundtrip(&mut state)?;
         }
     };
 

@@ -244,6 +244,24 @@ cos-cli state --app-id firefox --sticky --fullscreen --wait 5
 cos-cli state -i 1 --unminimize
 ````
 
+#### `close`
+Close an application window by its App ID or index.
+````console
+cos-cli close --app-id <ID>
+````
+Arguments:
+*   `-a, --app-id <ID>`
+    The Application ID (partial match, case-insensitive)
+*   `-i, --index <INDEX>`
+    The Application index from 'info' command
+
+Examples:
+````console
+cos-cli close -i 0
+cos-cli close --app-id firefox
+cos-cli close -a terminal
+````
+
 #### JSON-RPC Stdio Server Mode
 
 Start the CLI as a JSON-RPC server using stdin/stdout for communication:
@@ -318,6 +336,19 @@ Activate a workspace.
     "workspace": 1
   },
   "id": 5
+}
+````
+
+##### `close`
+Close an application window.
+````json
+{
+  "jsonrpc": "2.0",
+  "method": "close",
+  "params": {
+    "app_id": "firefox"
+  },
+  "id": 6
 }
 ````
 

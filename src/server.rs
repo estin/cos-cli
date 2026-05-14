@@ -3,12 +3,49 @@ use jsonrpc_stdio_server::jsonrpc_core::{Error, ErrorCode, IoHandler, Params};
 use serde::Deserialize;
 use std::error::Error as StdError;
 use std::sync::Arc;
-use tokio::sync::mpsc::{UnboundedSender, unbounded_channel};
+use tokio::sync::mpsc::{Sender, channel};
 use tokio::sync::oneshot;
+use tracing::warn;
 
 use crate::{AppState, JsonInfo};
 
 use wayland_client::{Connection, DispatchError, EventQueue};
+
+type StartResult = Result<
+    (
+        tokio::task::JoinHandle<Result<(), DispatchError>>,
+        Sender<BackendRequest>,
+    ),
+    Box<dyn StdError>,
+>;
+
+/// Wraps a `JoinHandle` and checks for panics when dropped.
+struct TaskGuard {
+    handle: Option<tokio::task::JoinHandle<()>>,
+}
+
+impl TaskGuard {
+    fn new(handle: tokio::task::JoinHandle<()>) -> Self {
+        Self {
+            handle: Some(handle),
+        }
+    }
+}
+
+impl Drop for TaskGuard {
+    fn drop(&mut self) {
+        if let Some(handle) = self.handle.take()
+            && handle.is_finished()
+        {
+            // If the task has already completed, check for panics.
+            // If it is still running, we don't block — the runtime
+            // will detach it during shutdown.
+            if let Some(Err(e)) = handle.now_or_never() {
+                warn!("Background task panicked: {e:?}");
+            }
+        }
+    }
+}
 
 pub struct Backend {
     pub connection: Connection,
@@ -22,7 +59,7 @@ pub struct MoveParams {
     pub app_id: Option<String>,
     #[serde(default)]
     pub index: Option<usize>,
-    pub workspace: String,
+    pub workspace: usize,
     #[serde(default)]
     pub workspace_group: Option<usize>,
     #[serde(default)]
@@ -71,12 +108,21 @@ pub struct ActivateWsParams {
     pub workspace_group: Option<usize>,
 }
 
+#[derive(Debug, Deserialize)]
+pub struct CloseParams {
+    #[serde(default)]
+    pub app_id: Option<String>,
+    #[serde(default)]
+    pub index: Option<usize>,
+}
+
 pub enum BackendRequestParams {
     GetInfo,
     Move(MoveParams),
     Activate(ActivateParams),
     ActivateWs(ActivateWsParams),
     State(StateParams),
+    Close(CloseParams),
 }
 
 pub struct BackendRequest {
@@ -105,9 +151,17 @@ pub enum BackendResponse {
     Err(String),
 }
 
-fn error_response(message: &str) -> Error {
+fn internal_error(message: &str) -> Error {
     Error {
         code: ErrorCode::InternalError,
+        message: message.to_string(),
+        data: None,
+    }
+}
+
+fn invalid_params(message: &str) -> Error {
+    Error {
+        code: ErrorCode::InvalidParams,
         message: message.to_string(),
         data: None,
     }
@@ -116,14 +170,9 @@ fn error_response(message: &str) -> Error {
 impl Backend {
     fn start(
         mut self,
-    ) -> Result<
-        (
-            tokio::task::JoinHandle<Result<(), DispatchError>>,
-            UnboundedSender<BackendRequest>,
-        ),
-        Box<dyn StdError>,
-    > {
-        let (request_tx, mut request_rx) = unbounded_channel::<BackendRequest>();
+    ) -> StartResult {
+        // Allow up to 32 pending requests for backpressure
+        let (request_tx, mut request_rx) = channel::<BackendRequest>(32);
 
         let handle = tokio::task::spawn(async move {
             let sleep = tokio::time::Duration::from_millis(300);
@@ -174,11 +223,21 @@ impl Backend {
                                     }
                                 }
                             }
+                            BackendRequestParams::Close(params) => {
+                                match self.handle_close(params).await {
+                                    Ok(msg) => {
+                                        let _ = request.response_tx.send(BackendResponse::Ok(msg));
+                                    }
+                                    Err(e) => {
+                                        let _ = request.response_tx.send(BackendResponse::Err(e.to_string()));
+                                    }
+                                }
+                            }
                         }
                     }
                     _ = tokio::time::sleep(sleep) => {
-                        self.event_queue.roundtrip(&mut self.app_state)?;
-                        self.connection.flush()?;
+                        let _ = self.event_queue.roundtrip(&mut self.app_state);
+                        let _ = self.connection.flush();
                     }
                 }
             }
@@ -191,9 +250,9 @@ impl Backend {
             .find_apps(params.app_id.clone(), params.index, params.wait)
             .await?;
 
-        let Some(manager) = &self.app_state.cosmic_toplevel_manager.clone() else {
-            return Err("Compositor does not support workspace management protocol.".into());
-        };
+        let manager = self.app_state.cosmic_toplevel_manager.as_ref().ok_or_else(|| {
+            "Compositor does not support workspace management protocol.".to_string()
+        })?;
 
         let workspace_index = if let Some(group_index) = params.workspace_group {
             let group = self
@@ -201,24 +260,20 @@ impl Backend {
                 .workspace_groups
                 .get(group_index)
                 .ok_or_else(|| format!("Workspace group not found: {}", group_index))?;
-            let idx = params
-                .workspace
-                .parse::<usize>()
-                .map_err(|_| format!("Invalid workspace index: {}", params.workspace))?;
-            if idx >= group.workspaces.len() {
+            if params.workspace >= group.workspaces.len() {
                 return Err(format!(
                     "Workspace index {} out of range (group has {} workspaces)",
-                    idx,
+                    params.workspace,
                     group.workspaces.len()
                 )
                 .into());
             }
-            (group_index, idx)
+            (group_index, params.workspace)
         } else {
             let mut found = None;
             for (gi, group) in self.app_state.workspace_groups.iter().enumerate() {
                 for (wi, _) in group.workspaces.iter().enumerate() {
-                    if format!("{}", wi) == params.workspace {
+                    if wi == params.workspace {
                         found = Some((gi, wi));
                         break;
                     }
@@ -283,9 +338,9 @@ impl Backend {
         &mut self,
         params: ActivateParams,
     ) -> Result<String, Box<dyn StdError>> {
-        let Some(manager) = &self.app_state.cosmic_toplevel_manager.clone() else {
-            return Err("Compositor does not support toplevel management protocol.".into());
-        };
+        let manager = self.app_state.cosmic_toplevel_manager.as_ref().ok_or_else(|| {
+            "Compositor does not support toplevel management protocol.".to_string()
+        })?;
 
         let Some(app) = self.app_state.apps.get(params.index) else {
             return Err(format!("App index not found: {}", params.index).into());
@@ -384,9 +439,9 @@ impl Backend {
             .find_apps(params.app_id.clone(), params.index, params.wait)
             .await?;
 
-        let Some(manager) = &self.app_state.cosmic_toplevel_manager.clone() else {
-            return Err("Compositor does not support toplevel management protocol.".into());
-        };
+        let manager = self.app_state.cosmic_toplevel_manager.as_ref().ok_or_else(|| {
+            "Compositor does not support toplevel management protocol.".to_string()
+        })?;
 
         let mut actions = Vec::new();
         if params.maximize {
@@ -451,6 +506,27 @@ impl Backend {
         ))
     }
 
+    async fn handle_close(&mut self, params: CloseParams) -> Result<String, Box<dyn StdError>> {
+        let apps = self
+            .find_apps(params.app_id.clone(), params.index, None)
+            .await?;
+
+        let manager = self.app_state.cosmic_toplevel_manager.as_ref().ok_or_else(|| {
+            "Compositor does not support toplevel management protocol.".to_string()
+        })?;
+
+        for app in &apps {
+            manager.close(&app.handle);
+        }
+
+        self.connection.flush()?;
+
+        self.event_queue.roundtrip(&mut self.app_state)?;
+
+        let desc = params.app_id.clone().unwrap_or_else(|| "app".to_string());
+        Ok(format!("Close request sent for {}", desc))
+    }
+
     async fn find_apps(
         &mut self,
         app_id: Option<String>,
@@ -509,11 +585,11 @@ impl Backend {
 }
 
 struct ServerHandler {
-    tx: UnboundedSender<BackendRequest>,
+    tx: Sender<BackendRequest>,
 }
 
 impl ServerHandler {
-    fn new(tx: UnboundedSender<BackendRequest>) -> Self {
+    fn new(tx: Sender<BackendRequest>) -> Self {
         Self { tx }
     }
 
@@ -524,11 +600,12 @@ impl ServerHandler {
         let (response_tx, request) = BackendRequest::request(request_params);
         self.tx
             .send(request)
-            .map_err(|e| error_response(&e.to_string()))?;
+            .await
+            .map_err(|e| internal_error(&e.to_string()))?;
         let response = response_tx
             .await
-            .map_err(|e| error_response(&e.to_string()))?;
-        serde_json::to_value(response).map_err(|e| error_response(&e.to_string()))
+            .map_err(|e| internal_error(&e.to_string()))?;
+        serde_json::to_value(response).map_err(|e| internal_error(&e.to_string()))
     }
 }
 
@@ -536,10 +613,10 @@ pub async fn run(mut backend: Backend) -> Result<(), Box<dyn StdError>> {
     let mut io = IoHandler::new();
 
     let mut watch_rx = backend.app_state.enable_notify();
-    let (_handle, request_tx) = backend.start()?;
+    let (_backend_handle, request_tx) = backend.start()?;
     let server_handler = Arc::new(ServerHandler::new(request_tx));
 
-    let _handle = tokio::spawn(async move {
+    let _notify_guard = TaskGuard::new(tokio::spawn(async move {
         while watch_rx.changed().await.is_ok() {
             let notification = serde_json::json!({
                 "jsonrpc": "2.0",
@@ -550,7 +627,7 @@ pub async fn run(mut backend: Backend) -> Result<(), Box<dyn StdError>> {
             });
             println!("{}", notification);
         }
-    });
+    }));
 
     let handler_info = server_handler.clone();
     io.add_method("info", move |_params: Params| {
@@ -565,7 +642,7 @@ pub async fn run(mut backend: Backend) -> Result<(), Box<dyn StdError>> {
         let handler = handler_move.clone();
         async move {
             let move_params: MoveParams =
-                params.parse().map_err(|e| error_response(&e.to_string()))?;
+                params.parse().map_err(|e| invalid_params(&e.to_string()))?;
             handler
                 .handle_request(BackendRequestParams::Move(move_params))
                 .await
@@ -578,7 +655,7 @@ pub async fn run(mut backend: Backend) -> Result<(), Box<dyn StdError>> {
         let handler = handler_activate.clone();
         async move {
             let activate_params: ActivateParams =
-                params.parse().map_err(|e| error_response(&e.to_string()))?;
+                params.parse().map_err(|e| invalid_params(&e.to_string()))?;
             handler
                 .handle_request(BackendRequestParams::Activate(activate_params))
                 .await
@@ -591,7 +668,7 @@ pub async fn run(mut backend: Backend) -> Result<(), Box<dyn StdError>> {
         let handler = handler_state.clone();
         async move {
             let state_params: StateParams =
-                params.parse().map_err(|e| error_response(&e.to_string()))?;
+                params.parse().map_err(|e| invalid_params(&e.to_string()))?;
             handler
                 .handle_request(BackendRequestParams::State(state_params))
                 .await
@@ -604,9 +681,22 @@ pub async fn run(mut backend: Backend) -> Result<(), Box<dyn StdError>> {
         let handler = handler_ws.clone();
         async move {
             let ws_params: ActivateWsParams =
-                params.parse().map_err(|e| error_response(&e.to_string()))?;
+                params.parse().map_err(|e| invalid_params(&e.to_string()))?;
             handler
                 .handle_request(BackendRequestParams::ActivateWs(ws_params))
+                .await
+        }
+        .boxed()
+    });
+
+    let handler_close = server_handler.clone();
+    io.add_method("close", move |params: Params| {
+        let handler = handler_close.clone();
+        async move {
+            let close_params: CloseParams =
+                params.parse().map_err(|e| invalid_params(&e.to_string()))?;
+            handler
+                .handle_request(BackendRequestParams::Close(close_params))
                 .await
         }
         .boxed()
