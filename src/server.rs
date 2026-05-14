@@ -3,21 +3,13 @@ use jsonrpc_stdio_server::jsonrpc_core::{Error, ErrorCode, IoHandler, Params};
 use serde::Deserialize;
 use std::error::Error as StdError;
 use std::sync::Arc;
+use std::thread;
 use tokio::sync::mpsc::{Sender, channel};
 use tokio::sync::oneshot;
-use tracing::warn;
 
-use crate::{AppState, JsonInfo};
+use crate::{App, AppState, JsonInfo};
 
-use wayland_client::{Connection, DispatchError, EventQueue};
-
-type StartResult = Result<
-    (
-        tokio::task::JoinHandle<Result<(), DispatchError>>,
-        Sender<BackendRequest>,
-    ),
-    Box<dyn StdError>,
->;
+use wayland_client::{Connection, EventQueue};
 
 /// Wraps a `JoinHandle` and checks for panics when dropped.
 struct TaskGuard {
@@ -36,22 +28,16 @@ impl Drop for TaskGuard {
     fn drop(&mut self) {
         if let Some(handle) = self.handle.take()
             && handle.is_finished()
+            && let Some(Err(e)) = handle.now_or_never()
         {
-            // If the task has already completed, check for panics.
-            // If it is still running, we don't block — the runtime
-            // will detach it during shutdown.
-            if let Some(Err(e)) = handle.now_or_never() {
-                warn!("Background task panicked: {e:?}");
-            }
+            tracing::warn!("Background task panicked: {e:?}");
         }
     }
 }
 
-pub struct Backend {
-    pub connection: Connection,
-    pub event_queue: EventQueue<AppState>,
-    pub app_state: AppState,
-}
+// ---------------------------------------------------------------------------
+// Parameter types
+// ---------------------------------------------------------------------------
 
 #[derive(Debug, Deserialize)]
 pub struct MoveParams {
@@ -167,92 +153,73 @@ fn invalid_params(message: &str) -> Error {
     }
 }
 
-impl Backend {
-    fn start(
-        mut self,
-    ) -> StartResult {
-        // Allow up to 32 pending requests for backpressure
-        let (request_tx, mut request_rx) = channel::<BackendRequest>(32);
+// ---------------------------------------------------------------------------
+// Synchronous event-loop thread
+// ---------------------------------------------------------------------------
 
-        let handle = tokio::task::spawn(async move {
-            let sleep = tokio::time::Duration::from_millis(300);
-            loop {
-                tokio::select! {
-                    Some(request) = request_rx.recv() => {
-                        match request.params {
-                            BackendRequestParams::GetInfo => {
-                                let _ = request.response_tx.send(BackendResponse::Info(JsonInfo::from(&self.app_state)));
-                            }
-                            BackendRequestParams::Move(params) => {
-                                match self.handle_move(params).await {
-                                    Ok(msg) => {
-                                        let _ = request.response_tx.send(BackendResponse::Ok(msg));
-                                    }
-                                    Err(e) => {
-                                        let _ = request.response_tx.send(BackendResponse::Err(e.to_string()));
-                                    }
-                                }
-                            }
-                            BackendRequestParams::Activate(params) => {
-                                match self.handle_activate(params).await {
-                                    Ok(msg) => {
-                                        let _ = request.response_tx.send(BackendResponse::Ok(msg));
-                                    }
-                                    Err(e) => {
-                                        let _ = request.response_tx.send(BackendResponse::Err(e.to_string()));
-                                    }
-                                }
-                            }
-                            BackendRequestParams::ActivateWs(params) => {
-                                match self.handle_activate_ws(params).await {
-                                    Ok(msg) => {
-                                        let _ = request.response_tx.send(BackendResponse::Ok(msg));
-                                    }
-                                    Err(e) => {
-                                        let _ = request.response_tx.send(BackendResponse::Err(e.to_string()));
-                                    }
-                                }
-                            }
-                            BackendRequestParams::State(params) => {
-                                match self.handle_state(params).await {
-                                    Ok(msg) => {
-                                        let _ = request.response_tx.send(BackendResponse::Ok(msg));
-                                    }
-                                    Err(e) => {
-                                        let _ = request.response_tx.send(BackendResponse::Err(e.to_string()));
-                                    }
-                                }
-                            }
-                            BackendRequestParams::Close(params) => {
-                                match self.handle_close(params).await {
-                                    Ok(msg) => {
-                                        let _ = request.response_tx.send(BackendResponse::Ok(msg));
-                                    }
-                                    Err(e) => {
-                                        let _ = request.response_tx.send(BackendResponse::Err(e.to_string()));
-                                    }
-                                }
-                            }
-                        }
-                    }
-                    _ = tokio::time::sleep(sleep) => {
-                        let _ = self.event_queue.roundtrip(&mut self.app_state);
-                        let _ = self.connection.flush();
-                    }
-                }
+/// Owned resources for the dedicated wayland event-loop thread.
+struct WaylandThread {
+    event_queue: EventQueue<AppState>,
+    app_state: AppState,
+    connection: Connection,
+    request_rx: std::sync::mpsc::Receiver<BackendRequest>,
+}
+
+impl WaylandThread {
+    fn run(mut self) {
+        let sleep = std::time::Duration::from_millis(300);
+        loop {
+            // Process any pending commands first (non-blocking check)
+            while let Ok(request) = self.request_rx.try_recv() {
+                self.process(request);
             }
-        });
-        Ok((handle, request_tx))
+
+            // Blocking roundtrip – safe here because this is a dedicated OS thread
+            let _ = self.event_queue.roundtrip(&mut self.app_state);
+            let _ = self.connection.flush();
+
+            thread::sleep(sleep);
+        }
     }
 
-    async fn handle_move(&mut self, params: MoveParams) -> Result<String, Box<dyn StdError>> {
-        let apps = self
-            .find_apps(params.app_id.clone(), params.index, params.wait)
-            .await?;
+    fn process(&mut self, request: BackendRequest) {
+        use BackendRequestParams::*;
+        let response = match request.params {
+            GetInfo => BackendResponse::Info(JsonInfo::from(&self.app_state)),
+            Move(p) => match self.handle_move(p) {
+                Ok(msg) => BackendResponse::Ok(msg),
+                Err(e) => BackendResponse::Err(e.to_string()),
+            },
+            Activate(p) => match self.handle_activate(p) {
+                Ok(msg) => BackendResponse::Ok(msg),
+                Err(e) => BackendResponse::Err(e.to_string()),
+            },
+            ActivateWs(p) => match self.handle_activate_ws(p) {
+                Ok(msg) => BackendResponse::Ok(msg),
+                Err(e) => BackendResponse::Err(e.to_string()),
+            },
+            State(p) => match self.handle_state(p) {
+                Ok(msg) => BackendResponse::Ok(msg),
+                Err(e) => BackendResponse::Err(e.to_string()),
+            },
+            Close(p) => match self.handle_close(p) {
+                Ok(msg) => BackendResponse::Ok(msg),
+                Err(e) => BackendResponse::Err(e.to_string()),
+            },
+        };
+        let _ = request.response_tx.send(response);
+    }
 
-        let manager = self.app_state.cosmic_toplevel_manager.as_ref().ok_or_else(|| {
-            "Compositor does not support workspace management protocol.".to_string()
-        })?;
+    fn handle_move(&mut self, params: MoveParams) -> Result<String, Box<dyn StdError>> {
+        let apps = self.find_apps(params.app_id.clone(), params.index, params.wait)?;
+
+        let manager = self
+            .app_state
+            .cosmic_toplevel_manager
+            .as_ref()
+            .ok_or_else(|| {
+                "Compositor does not support workspace management protocol.".to_string()
+            })?;
 
         let workspace_index = if let Some(group_index) = params.workspace_group {
             let group = self
@@ -334,13 +301,14 @@ impl Backend {
         ))
     }
 
-    async fn handle_activate(
-        &mut self,
-        params: ActivateParams,
-    ) -> Result<String, Box<dyn StdError>> {
-        let manager = self.app_state.cosmic_toplevel_manager.as_ref().ok_or_else(|| {
-            "Compositor does not support toplevel management protocol.".to_string()
-        })?;
+    fn handle_activate(&mut self, params: ActivateParams) -> Result<String, Box<dyn StdError>> {
+        let manager = self
+            .app_state
+            .cosmic_toplevel_manager
+            .as_ref()
+            .ok_or_else(|| {
+                "Compositor does not support toplevel management protocol.".to_string()
+            })?;
 
         let Some(app) = self.app_state.apps.get(params.index) else {
             return Err(format!("App index not found: {}", params.index).into());
@@ -378,7 +346,7 @@ impl Backend {
         Ok(format!("Activated app at index {}", params.index))
     }
 
-    async fn handle_activate_ws(
+    fn handle_activate_ws(
         &mut self,
         params: ActivateWsParams,
     ) -> Result<String, Box<dyn StdError>> {
@@ -434,14 +402,16 @@ impl Backend {
         Ok(format!("Activated workspace {}", params.workspace))
     }
 
-    async fn handle_state(&mut self, params: StateParams) -> Result<String, Box<dyn StdError>> {
-        let apps = self
-            .find_apps(params.app_id.clone(), params.index, params.wait)
-            .await?;
+    fn handle_state(&mut self, params: StateParams) -> Result<String, Box<dyn StdError>> {
+        let apps = self.find_apps(params.app_id.clone(), params.index, params.wait)?;
 
-        let manager = self.app_state.cosmic_toplevel_manager.as_ref().ok_or_else(|| {
-            "Compositor does not support toplevel management protocol.".to_string()
-        })?;
+        let manager = self
+            .app_state
+            .cosmic_toplevel_manager
+            .as_ref()
+            .ok_or_else(|| {
+                "Compositor does not support toplevel management protocol.".to_string()
+            })?;
 
         let mut actions = Vec::new();
         if params.maximize {
@@ -506,14 +476,16 @@ impl Backend {
         ))
     }
 
-    async fn handle_close(&mut self, params: CloseParams) -> Result<String, Box<dyn StdError>> {
-        let apps = self
-            .find_apps(params.app_id.clone(), params.index, None)
-            .await?;
+    fn handle_close(&mut self, params: CloseParams) -> Result<String, Box<dyn StdError>> {
+        let apps = self.find_apps(params.app_id.clone(), params.index, None)?;
 
-        let manager = self.app_state.cosmic_toplevel_manager.as_ref().ok_or_else(|| {
-            "Compositor does not support toplevel management protocol.".to_string()
-        })?;
+        let manager = self
+            .app_state
+            .cosmic_toplevel_manager
+            .as_ref()
+            .ok_or_else(|| {
+                "Compositor does not support toplevel management protocol.".to_string()
+            })?;
 
         for app in &apps {
             manager.close(&app.handle);
@@ -521,18 +493,16 @@ impl Backend {
 
         self.connection.flush()?;
 
-        self.event_queue.roundtrip(&mut self.app_state)?;
-
         let desc = params.app_id.clone().unwrap_or_else(|| "app".to_string());
         Ok(format!("Close request sent for {}", desc))
     }
 
-    async fn find_apps(
+    fn find_apps(
         &mut self,
         app_id: Option<String>,
         app_index: Option<usize>,
         wait: Option<u64>,
-    ) -> Result<Vec<crate::App>, Box<dyn StdError>> {
+    ) -> Result<Vec<App>, Box<dyn StdError>> {
         if let Some(index) = app_index {
             if let Some(app) = self.app_state.apps.get(index) {
                 Ok(vec![app.clone()])
@@ -540,7 +510,7 @@ impl Backend {
                 Err(format!("App index not found: {}", index).into())
             }
         } else if let Some(id) = app_id {
-            let sleep = tokio::time::Duration::from_millis(500);
+            let sleep = std::time::Duration::from_millis(500);
             let wait_dur = wait.map(std::time::Duration::from_secs);
             let now = std::time::Instant::now();
             let mut apps;
@@ -566,9 +536,8 @@ impl Backend {
                     if now.elapsed() > wait {
                         break;
                     }
-                    tokio::time::sleep(sleep).await;
-                    // TODO use async methods
-                    self.event_queue.roundtrip(&mut self.app_state)?;
+                    thread::sleep(sleep);
+                    let _ = self.event_queue.roundtrip(&mut self.app_state);
                 } else {
                     break;
                 }
@@ -583,6 +552,10 @@ impl Backend {
         }
     }
 }
+
+// ---------------------------------------------------------------------------
+// Public ServerHandler & run()
+// ---------------------------------------------------------------------------
 
 struct ServerHandler {
     tx: Sender<BackendRequest>,
@@ -609,97 +582,133 @@ impl ServerHandler {
     }
 }
 
-pub async fn run(mut backend: Backend) -> Result<(), Box<dyn StdError>> {
+pub async fn run(
+    connection: Connection,
+    event_queue: EventQueue<AppState>,
+    mut app_state: AppState,
+) -> Result<(), Box<dyn StdError>> {
     let mut io = IoHandler::new();
 
-    let mut watch_rx = backend.app_state.enable_notify();
-    let (_backend_handle, request_tx) = backend.start()?;
-    let server_handler = Arc::new(ServerHandler::new(request_tx));
+    let (request_tx, mut request_rx) = channel::<BackendRequest>(32);
+    let (sync_tx, sync_rx) = std::sync::mpsc::channel::<BackendRequest>();
 
-    let _notify_guard = TaskGuard::new(tokio::spawn(async move {
+    // ------------------------------------------------------------------
+    // Dedicated OS thread for the synchronous wayland event loop
+    // ------------------------------------------------------------------
+    let mut watch_rx = app_state.enable_notify();
+    let wayland = WaylandThread {
+        event_queue,
+        app_state,
+        connection,
+        request_rx: sync_rx,
+    };
+    let _wayland_thread = thread::spawn(move || wayland.run());
+
+    // Task that emits state_change JSON-RPC notifications only when
+    // dispatch.rs calls AppState::notify() — i.e. on actual state changes.
+    let _notify_guard = TaskGuard::new(tokio::task::spawn(async move {
         while watch_rx.changed().await.is_ok() {
-            let notification = serde_json::json!({
-                "jsonrpc": "2.0",
-                "method": "state_change",
-                "params": {
-                    "state": *watch_rx.borrow(),
-                }
-            });
-            println!("{}", notification);
+            if let Some(ref info) = *watch_rx.borrow() {
+                let notification = serde_json::json!({
+                    "jsonrpc": "2.0",
+                    "method": "state_change",
+                    "params": {
+                        "state": info,
+                    }
+                });
+                println!("{}", notification);
+            }
         }
     }));
 
-    let handler_info = server_handler.clone();
-    io.add_method("info", move |_params: Params| {
-        handler_info
-            .clone()
-            .handle_request(BackendRequestParams::GetInfo)
+    // ------------------------------------------------------------------
+    // Async bridge: forwards JSON-RPC requests to the wayland thread
+    // ------------------------------------------------------------------
+    let _bridge_guard = TaskGuard::new(tokio::task::spawn(async move {
+        while let Some(request) = request_rx.recv().await {
+            if sync_tx.send(request).is_err() {
+                tracing::warn!("Wayland thread exited");
+                break;
+            }
+        }
+    }));
+
+    let server_handler = Arc::new(ServerHandler::new(request_tx));
+
+    io.add_method("info", {
+        let handler = server_handler.clone();
+        move |_params: Params| {
+            handler
+                .clone()
+                .handle_request(BackendRequestParams::GetInfo)
+                .boxed()
+        }
+    });
+
+    io.add_method("move", {
+        let handler = server_handler.clone();
+        move |params: Params| {
+            let handler = handler.clone();
+            async move {
+                let p: MoveParams = params.parse().map_err(|e| invalid_params(&e.to_string()))?;
+                handler.handle_request(BackendRequestParams::Move(p)).await
+            }
             .boxed()
+        }
     });
 
-    let handler_move = server_handler.clone();
-    io.add_method("move", move |params: Params| {
-        let handler = handler_move.clone();
-        async move {
-            let move_params: MoveParams =
-                params.parse().map_err(|e| invalid_params(&e.to_string()))?;
-            handler
-                .handle_request(BackendRequestParams::Move(move_params))
-                .await
+    io.add_method("activate", {
+        let handler = server_handler.clone();
+        move |params: Params| {
+            let handler = handler.clone();
+            async move {
+                let p: ActivateParams =
+                    params.parse().map_err(|e| invalid_params(&e.to_string()))?;
+                handler
+                    .handle_request(BackendRequestParams::Activate(p))
+                    .await
+            }
+            .boxed()
         }
-        .boxed()
     });
 
-    let handler_activate = server_handler.clone();
-    io.add_method("activate", move |params: Params| {
-        let handler = handler_activate.clone();
-        async move {
-            let activate_params: ActivateParams =
-                params.parse().map_err(|e| invalid_params(&e.to_string()))?;
-            handler
-                .handle_request(BackendRequestParams::Activate(activate_params))
-                .await
+    io.add_method("state", {
+        let handler = server_handler.clone();
+        move |params: Params| {
+            let handler = handler.clone();
+            async move {
+                let p: StateParams = params.parse().map_err(|e| invalid_params(&e.to_string()))?;
+                handler.handle_request(BackendRequestParams::State(p)).await
+            }
+            .boxed()
         }
-        .boxed()
     });
 
-    let handler_state = server_handler.clone();
-    io.add_method("state", move |params: Params| {
-        let handler = handler_state.clone();
-        async move {
-            let state_params: StateParams =
-                params.parse().map_err(|e| invalid_params(&e.to_string()))?;
-            handler
-                .handle_request(BackendRequestParams::State(state_params))
-                .await
+    io.add_method("ws_activate", {
+        let handler = server_handler.clone();
+        move |params: Params| {
+            let handler = handler.clone();
+            async move {
+                let p: ActivateWsParams =
+                    params.parse().map_err(|e| invalid_params(&e.to_string()))?;
+                handler
+                    .handle_request(BackendRequestParams::ActivateWs(p))
+                    .await
+            }
+            .boxed()
         }
-        .boxed()
     });
 
-    let handler_ws = server_handler.clone();
-    io.add_method("ws_activate", move |params: Params| {
-        let handler = handler_ws.clone();
-        async move {
-            let ws_params: ActivateWsParams =
-                params.parse().map_err(|e| invalid_params(&e.to_string()))?;
-            handler
-                .handle_request(BackendRequestParams::ActivateWs(ws_params))
-                .await
+    io.add_method("close", {
+        let handler = server_handler.clone();
+        move |params: Params| {
+            let handler = handler.clone();
+            async move {
+                let p: CloseParams = params.parse().map_err(|e| invalid_params(&e.to_string()))?;
+                handler.handle_request(BackendRequestParams::Close(p)).await
+            }
+            .boxed()
         }
-        .boxed()
-    });
-
-    let handler_close = server_handler.clone();
-    io.add_method("close", move |params: Params| {
-        let handler = handler_close.clone();
-        async move {
-            let close_params: CloseParams =
-                params.parse().map_err(|e| invalid_params(&e.to_string()))?;
-            handler
-                .handle_request(BackendRequestParams::Close(close_params))
-                .await
-        }
-        .boxed()
     });
 
     let server = jsonrpc_stdio_server::ServerBuilder::new(io).build();

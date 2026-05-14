@@ -16,8 +16,6 @@ use wayland_protocols::ext::workspace::v1::client::{
     ext_workspace_manager_v1,
 };
 
-use crate::server::Backend;
-
 mod dispatch;
 mod server;
 
@@ -1189,12 +1187,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 .enable_all()
                 .build()?;
             rt.block_on(async move {
-                server::run(Backend {
-                    connection: conn,
-                    event_queue,
-                    app_state: state,
-                })
-                .await?;
+                server::run(conn, event_queue, state).await?;
                 Ok::<_, Box<dyn std::error::Error>>(())
             })?;
         }
