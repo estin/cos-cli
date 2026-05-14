@@ -42,7 +42,7 @@ Commands:
   activate                      Activate an application on a specific seat
   ws-activate                   Activate a workspace
   state                         Set state of an application
-serve                         Start a stdio JSON-RPC server
+  serve                         Start a stdio JSON-RPC server
   close                         Close an application
 
 Options for 'move':
@@ -526,7 +526,7 @@ enum Command {
     Activate(ActivateArgs),
     ActivateWs(ActivateWsArgs),
     State(StateArgs),
-Serve,
+    Serve,
     Close(CloseArgs),
 }
 
@@ -580,6 +580,35 @@ fn find_apps<T: AppFinderArgs>(
     } else {
         unreachable!(); // Already handled by arg parsing
     }
+}
+
+fn discover() -> Result<(Connection, EventQueue<AppState>, AppState), Box<dyn std::error::Error>> {
+    let conn = Connection::connect_to_env()?;
+    let mut event_queue = conn.new_event_queue();
+    let qh = event_queue.handle();
+
+    let mut state = AppState::new();
+    let registry = conn.display().get_registry(&qh, ());
+
+    event_queue.roundtrip(&mut state)?;
+    dispatch::bind(&registry, &qh, &mut state);
+    event_queue.roundtrip(&mut state)?;
+    tracing::debug!("Discovered {}", state.entities_count(),);
+
+    let mut entities_count = 0;
+    for i in 0..10 {
+        event_queue.roundtrip(&mut state)?;
+        std::thread::sleep(std::time::Duration::from_millis(100));
+        let new_entities_count = state.entities_count();
+        tracing::debug!("Step {i}. Discovered {new_entities_count} (previous: {entities_count})");
+
+        if new_entities_count == entities_count {
+            break;
+        }
+        entities_count = new_entities_count;
+    }
+
+    Ok((conn, event_queue, state))
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -683,7 +712,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 ));
             }
 
-Command::State(args)
+            Command::State(args)
         }
         Some("serve") => Command::Serve,
         Some("close") => {
@@ -719,30 +748,7 @@ Command::State(args)
         }
     };
 
-    let conn = Connection::connect_to_env()?;
-    let mut event_queue = conn.new_event_queue();
-    let qh = event_queue.handle();
-
-    let mut state = AppState::new();
-    let registry = conn.display().get_registry(&qh, ());
-
-    event_queue.roundtrip(&mut state)?;
-    dispatch::bind(&registry, &qh, &mut state);
-    event_queue.roundtrip(&mut state)?;
-    tracing::debug!("Discovered {}", state.entities_count(),);
-
-    let mut entities_count = 0;
-    for i in 0..10 {
-        event_queue.roundtrip(&mut state)?;
-        std::thread::sleep(std::time::Duration::from_millis(100));
-        let new_entities_count = state.entities_count();
-        tracing::debug!("Step {i}. Discovered {new_entities_count} (previous: {entities_count})");
-
-        if new_entities_count == entities_count {
-            break;
-        }
-        entities_count = new_entities_count;
-    }
+    let (conn, mut event_queue, mut state) = discover()?;
 
     match command {
         Command::Info(args) => {
@@ -1193,7 +1199,7 @@ Command::State(args)
 
             conn.flush()?;
         }
-Command::Serve => {
+        Command::Serve => {
             let rt = tokio::runtime::Builder::new_current_thread()
                 .enable_all()
                 .build()?;
@@ -1216,35 +1222,16 @@ Command::Serve => {
                 ));
             };
 
-            let app_count = apps_to_close.len();
             for app in &apps_to_close {
-                tracing::debug!(
+                println!(
                     "Sending close request for: {}",
                     app.app_id.as_deref().unwrap_or("unknown")
                 );
                 manager.close(&app.handle);
             }
 
-            conn.flush()?;
-
             event_queue.roundtrip(&mut state)?;
-
-            let remaining = state
-                .apps
-                .iter()
-                .filter(|a| apps_to_close.iter().any(|c| c.handle == a.handle))
-                .count();
-            if remaining == 0 && app_count > 0 {
-                tracing::debug!("All {} app(s) closed successfully", app_count);
-            } else if remaining < app_count {
-                tracing::debug!(
-                    "{}/{} app(s) closed",
-                    app_count - remaining,
-                    app_count
-                );
-            } else {
-                tracing::warn!("App(s) still present after close request. The compositor may not support closing or the app may have refused.");
-            }
+            conn.flush()?;
         }
     };
 

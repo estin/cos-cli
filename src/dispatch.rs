@@ -380,6 +380,7 @@ impl Dispatch<zcosmic_toplevel_handle_v1::ZcosmicToplevelHandleV1, ()> for AppSt
                 .unwrap_or_default();
             tracing::debug!("Toplevel closed by compositor: {}", app_id);
             app_data.apps.retain(|t| &t.handle != toplevel);
+            app_data.notify();
             return;
         }
         let Some(info) = app_data.apps.iter_mut().find(|t| &t.handle == toplevel) else {
