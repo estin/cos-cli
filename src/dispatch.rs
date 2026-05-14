@@ -298,6 +298,26 @@ impl Dispatch<zcosmic_toplevel_manager_v1::ZcosmicToplevelManagerV1, ()> for App
         _: &QueueHandle<Self>,
     ) {
         tracing::debug!(event = ?event, proxy = ?proxy, "ZcosmicToplevelManagerV1");
+        if let zcosmic_toplevel_manager_v1::Event::Capabilities { capabilities } = event {
+            let caps: Vec<u32> = capabilities
+                .chunks_exact(4)
+                .map(|chunk| u32::from_ne_bytes(chunk.try_into().unwrap()))
+                .collect();
+            let supports_close = caps.contains(&1);
+            let supports_activate = caps.contains(&2);
+            let supports_maximize = caps.contains(&3);
+            let supports_minimize = caps.contains(&4);
+            let supports_fullscreen = caps.contains(&5);
+            tracing::debug!(
+                "Compositor capabilities: close={}, activate={}, maximize={}, minimize={}, fullscreen={} (raw: {:?})",
+                supports_close,
+                supports_activate,
+                supports_maximize,
+                supports_minimize,
+                supports_fullscreen,
+                caps,
+            );
+        }
     }
 }
 
@@ -342,6 +362,17 @@ impl Dispatch<zcosmic_toplevel_handle_v1::ZcosmicToplevelHandleV1, ()> for AppSt
         _: &QueueHandle<AppState>,
     ) {
         tracing::debug!(event = ?event, proxy = ?toplevel, "ZcosmicToplevelHandleV1");
+        if let zcosmic_toplevel_handle_v1::Event::Closed = event {
+            let app_id = app_data
+                .apps
+                .iter()
+                .find(|t| &t.handle == toplevel)
+                .and_then(|a| a.app_id.clone())
+                .unwrap_or_default();
+            tracing::debug!("Toplevel closed by compositor: {}", app_id);
+            app_data.apps.retain(|t| &t.handle != toplevel);
+            return;
+        }
         let Some(info) = app_data.apps.iter_mut().find(|t| &t.handle == toplevel) else {
             return;
         };

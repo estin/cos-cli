@@ -37,6 +37,7 @@ Commands:
   move                          Move an application to a specific workspace
   activate                      Activate an application on a specific seat
   state                         Set state of an application
+  close                         Close an application
 
 Options for 'move':
   -a, --app-id <ID>             The Application ID (partial match, case-insensitive)
@@ -63,6 +64,11 @@ Options for 'state':
   --sticky
   --unsticky
 
+Options for 'close':
+  -a, --app-id <ID>             The Application ID (partial match, case-insensitive)
+  -i, --index <INDEX>           The Application index from 'info' command
+  --wait <SECONDS>              Wait for the app to appear (optional, only for --app-id)
+
 Options for 'info':
   --json                        Output in JSON format
   --discover-wg-output          Try to find info relation about workspace group and output
@@ -80,6 +86,9 @@ Examples:
   cos-cli activate -i 0
   cos-cli state -i 0 --maximize
   cos-cli state --app-id firefox --sticky --fullscreen
+  cos-cli close -i 0
+  cos-cli close --app-id firefox
+  cos-cli close -a terminal --wait 5
 ";
 
 struct CliError(String);
@@ -315,6 +324,13 @@ struct StateArgs {
     unsticky: bool,
 }
 
+#[derive(Debug)]
+struct CloseArgs {
+    app_id: Option<String>,
+    app_index: Option<usize>,
+    wait: Option<u64>,
+}
+
 trait AppFinderArgs {
     fn app_index(&self) -> Option<usize>;
     fn app_id(&self) -> Option<&String>;
@@ -349,6 +365,20 @@ impl AppFinderArgs for StateArgs {
     }
 }
 
+impl AppFinderArgs for CloseArgs {
+    fn app_index(&self) -> Option<usize> {
+        self.app_index
+    }
+
+    fn app_id(&self) -> Option<&String> {
+        self.app_id.as_ref()
+    }
+
+    fn wait(&self) -> Option<u64> {
+        self.wait
+    }
+}
+
 #[derive(Debug)]
 struct InfoArgs {
     json: bool,
@@ -360,6 +390,7 @@ enum Command {
     Move(MoveArgs),
     Activate(ActivateArgs),
     State(StateArgs),
+    Close(CloseArgs),
 }
 
 fn find_apps<T: AppFinderArgs>(
@@ -507,6 +538,27 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
 
             Command::State(args)
+        }
+        Some("close") => {
+            let app_id: Option<String> = pargs.opt_value_from_str(["-a", "--app-id"])?;
+            let app_index: Option<usize> = pargs.opt_value_from_str(["-i", "--index"])?;
+
+            if app_id.is_none() && app_index.is_none() {
+                return Err(CliError::new(
+                    "Either --app-id or --index must be provided for 'close' command.".into(),
+                ));
+            }
+            if app_id.is_some() && app_index.is_some() {
+                return Err(CliError::new(
+                    "Only one of --app-id or --index can be provided for 'close' command.".into(),
+                ));
+            }
+
+            Command::Close(CloseArgs {
+                app_id,
+                app_index,
+                wait: pargs.opt_value_from_fn("--wait", |v| v.parse())?,
+            })
         }
         Some("help") | None => {
             println!("{HELP}");
@@ -1047,6 +1099,45 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
 
             conn.flush()?;
+        }
+        Command::Close(args) => {
+            let apps_to_close = find_apps(&mut state, &mut event_queue, &args)?;
+
+            let Some(manager) = &state.cosmic_toplevel_manager else {
+                return Err(CliError::new(
+                    "Compositor does not support toplevel management protocol.".into(),
+                ));
+            };
+
+            let app_count = apps_to_close.len();
+            for app in &apps_to_close {
+                tracing::debug!(
+                    "Sending close request for: {}",
+                    app.app_id.as_deref().unwrap_or("unknown")
+                );
+                manager.close(&app.handle);
+            }
+
+            conn.flush()?;
+
+            event_queue.roundtrip(&mut state)?;
+
+            let remaining = state
+                .apps
+                .iter()
+                .filter(|a| apps_to_close.iter().any(|c| c.handle == a.handle))
+                .count();
+            if remaining == 0 && app_count > 0 {
+                tracing::debug!("All {} app(s) closed successfully", app_count);
+            } else if remaining < app_count {
+                tracing::debug!(
+                    "{}/{} app(s) closed",
+                    app_count - remaining,
+                    app_count
+                );
+            } else {
+                tracing::warn!("App(s) still present after close request. The compositor may not support closing or the app may have refused.");
+            }
         }
     };
 
